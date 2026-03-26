@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "server",
+  "dolt_database": "babysitter",
+  "project_id": "e90c77cb-b15d-458c-af17-48ae9be7ad17"
+}

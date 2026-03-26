@@ -30,3 +30,12 @@
 - `ivory-glacier`: approved the required skill read, observed a second wrong structural draft using `input.is_key_pressed`, `update()`, `draw()`, and `tick()`, sent one exact `steer`, then again saw a silent `running` turn with no new request until stop.
 - After stopping `ivory-glacier`, the unread tail surfaced a latent `write` request for `cars.lua`. The draft was not approvable: wrong TIC-80 API family, tiny 24x16 screen model, `tick()` instead of `function TIC()`, and a malformed palette block that used comma-separated colors instead of one 96-hex-character string.
 - Attempting `babysitter disapprove <id>` after the stop failed with `no active session`, so the timing edge matters operationally.
+
+## Addendum: `golden-delta`
+
+- `golden-delta` stayed visible through normal `status` / `requests` / `poll`; no raw inspection was needed.
+- First reviewed `cars.lua` draft used `load()`, `update()`, `draw()`, `main()`, `input.is_key_pressed`, a tiny 16x16 world model, and a malformed palette string shorter than the required 96 hex characters. It was disapproved immediately.
+- After that disapproval the model did one bounded `pwd && ls -la` check in the run directory and then returned to `cars.lua`.
+- One exact nudge was sent: use actual TIC-80 Lua structure, `function TIC()`, `btn`/`btnp`, no `load`/`update`/`draw`/`main`, exact palette footer, then `tic80ctl start -> load -> run -> playtest`.
+- The next two drafts still kept `load()` plus `draw()` / `main()` wrappers around `TIC()`, reused the same malformed palette footer, and never became safe to approve.
+- The run was stopped after the third structurally wrong draft. No `tic80ctl` command was approved because the agent never produced an approvable cart.

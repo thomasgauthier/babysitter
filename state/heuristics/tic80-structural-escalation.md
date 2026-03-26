@@ -13,5 +13,7 @@
 
 - First wrong structure: one exact nudge is acceptable if the rest of the cart is salvageable.
 - Same wrong structure again: disapprove and push the session toward a bounded stop or a full rewrite.
+- If the post-nudge draft merely adds `TIC()` while keeping `load()` / `draw()` / `main()` wrappers or reuses the same malformed palette footer, count that as the same wrong structure and do not reset the escalation ladder.
+- After three structurally wrong Lua drafts in one bounded run, stop the session rather than waiting for a fourth rewrite to maybe reach `tic80ctl`.
 - If a `steer` only yields a success acknowledgement and standard polls stay empty while `status` remains `running`, treat that as a likely wedged turn and stop it after one bounded recheck.
 - When a bad `write` request is already visible in filtered `poll`, answer it before stopping; once the session is stopped, typed request responses can fail with `no active session`.
