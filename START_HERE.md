@@ -25,7 +25,11 @@ Compatibility alias:
 
 The filtered poll views expose approval request IDs directly, so you should not need raw mode for ordinary approval responses.
 
-For `Nudge`, the trace shows a two-step flow: answer the `select` request with `Nudge`, then answer the separate `input` request with the actual nudge text.
+For `Nudge`, prefer the ergonomic CLI form:
+
+- `./babysitter nudge REQ1 --text "Do the next bounded step."`
+
+That still uses the real two-step RPC flow under the hood, but the CLI will wait for the follow-up input request and answer it for you.
 
 ## Read In This Order
 

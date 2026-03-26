@@ -50,14 +50,15 @@ Use typed commands first:
 ```sh
 ./babysitter prompt --file task.md
 ./babysitter approve REQ1
-./babysitter nudge REQ2
-./babysitter input REQ3 --file nudge.txt
+./babysitter nudge REQ2 --file nudge.txt
 ```
 
-For `Nudge`, remember the real flow is two-step:
+For `Nudge`, prefer the high-level CLI form:
 
-1. answer the `select` request with `babysitter nudge <id>`
-2. answer the separate `input` request with `babysitter input <id> --text ...` or `--file ...`
+1. `babysitter nudge <id> --text ...`
+2. or `babysitter nudge <id> --file ...`
+
+The CLI still performs the real two-step RPC flow underneath, but the operator does not need to answer the follow-up input request manually.
 
 Use `babysitter send` only when the typed commands do not fit.
 
@@ -142,7 +143,7 @@ Preferred CLI:
 ```sh
 ./babysitter approve REQ1
 ./babysitter disapprove REQ1
-./babysitter nudge REQ1
+./babysitter nudge REQ1 --text "Do not debug tic80ctl. Continue the bounded workflow: load the cart, then run it."
 ./babysitter heuristic REQ1
 ./babysitter select REQ1 --option "Approve"
 ```

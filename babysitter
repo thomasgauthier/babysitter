@@ -19,6 +19,8 @@ RUNS_DIR = Path("runs")
 EPHEMERAL_LINT_CONFIGS = {"selene.toml", "tic80.yml"}
 POLL_MODES = ("pretty", "raw", "json")
 ACTIONABLE_REQUEST_METHODS = {"select", "input", "editor", "confirm"}
+HIDDEN_SYNC_POLL_MODE = "_sync"
+NUDGE_FOLLOW_UP_TIMEOUT_SECONDS = 5.0
 AGENT_DIR = Path("agent")
 SYSTEM_PROMPT_SOURCE = AGENT_DIR / "SYSTEM.md"
 EXTENSIONS_DIR = AGENT_DIR / "extensions"
@@ -132,6 +134,15 @@ def ensure_poll_state(session: dict) -> dict:
     if "stdout_offset" in session:
         state["raw"]["offset"] = max(int(session.get("stdout_offset", 0)), int(state["raw"].get("offset", 0)))
     return state
+
+
+def ensure_semantic_poll_mode_state(state: dict, mode: str) -> dict:
+    mode_state = state.setdefault(mode, {})
+    mode_state.setdefault("offset", 0)
+    mode_state.setdefault("pending", "")
+    mode_state.setdefault("carry_reasoning", "")
+    mode_state.setdefault("carry_assistant_text", "")
+    return mode_state
 
 
 def ensure_runtime_state(session: dict) -> dict:
@@ -407,7 +418,10 @@ def read_jsonl_lines(session: dict, mode: str) -> list[str]:
         fail(f"stdout log is missing: {stdout_log}")
 
     poll_state = ensure_poll_state(session)
-    mode_state = poll_state[mode]
+    if mode not in poll_state:
+        mode_state = ensure_semantic_poll_mode_state(poll_state, mode)
+    else:
+        mode_state = poll_state[mode]
     chunk, next_offset = read_new_bytes(stdout_log, int(mode_state.get("offset", 0)))
     pending = str(mode_state.get("pending", ""))
     text = pending + chunk.decode("utf-8", errors="replace")
@@ -856,6 +870,14 @@ def read_text_source(args: argparse.Namespace) -> str:
     return text
 
 
+def has_text_source(args: argparse.Namespace) -> bool:
+    return (
+        getattr(args, "text", None) is not None
+        or getattr(args, "file", None) is not None
+        or bool(getattr(args, "stdin", False))
+    )
+
+
 def send_payload(session: dict, payload: dict, raw_payload: str | None = None) -> None:
     body = raw_payload if raw_payload is not None else json.dumps(payload, ensure_ascii=False)
     write_fifo_line(Path(session["stdin_fifo"]), body)
@@ -867,6 +889,65 @@ def send_payload(session: dict, payload: dict, raw_payload: str | None = None) -
             clear_pending_request(session, request_id)
 
     save_session(session)
+
+
+def refresh_runtime_from_log(session: dict, mode: str = HIDDEN_SYNC_POLL_MODE) -> list[dict]:
+    lines = read_jsonl_lines(session, mode)
+    poll_state = ensure_poll_state(session)
+    mode_state = poll_state[mode]
+    events, carry_reasoning, carry_assistant_text = build_semantic_events(
+        lines,
+        str(mode_state.get("carry_reasoning", "")),
+        str(mode_state.get("carry_assistant_text", "")),
+    )
+    apply_semantic_events_to_runtime(session, events)
+    mode_state["carry_reasoning"] = carry_reasoning
+    mode_state["carry_assistant_text"] = carry_assistant_text
+    save_session(session)
+    return events
+
+
+def looks_like_nudge_follow_up_request(request: dict) -> bool:
+    if request.get("method") != "input":
+        return False
+
+    for key in ("title", "message", "placeholder"):
+        value = request.get(key)
+        if isinstance(value, str) and "nudge" in value.lower():
+            return True
+    return False
+
+
+def find_nudge_follow_up_request(session: dict, existing_request_ids: set[str]) -> dict | None:
+    candidates = [
+        request
+        for request in ordered_pending_requests(session)
+        if isinstance(request.get("id"), str) and request["id"] not in existing_request_ids
+    ]
+    preferred = [request for request in candidates if looks_like_nudge_follow_up_request(request)]
+    if len(preferred) == 1:
+        return preferred[0]
+    if len(preferred) > 1:
+        fail("multiple follow-up nudge input requests are pending; run babysitter requests")
+
+    input_candidates = [request for request in candidates if request.get("method") == "input"]
+    if len(input_candidates) == 1:
+        return input_candidates[0]
+    if len(input_candidates) > 1:
+        fail("multiple new input requests are pending after Nudge; run babysitter requests")
+    return None
+
+
+def wait_for_nudge_follow_up_request(session: dict, existing_request_ids: set[str]) -> dict:
+    deadline = time.time() + NUDGE_FOLLOW_UP_TIMEOUT_SECONDS
+    while time.time() < deadline:
+        refresh_runtime_from_log(session)
+        request = find_nudge_follow_up_request(session, existing_request_ids)
+        if request:
+            return request
+        time.sleep(0.1)
+
+    fail("selected Nudge, but no follow-up input request appeared; run babysitter requests")
 
 
 def emit_command_success(args: argparse.Namespace, command: str, message: str, **details: object) -> int:
@@ -1113,14 +1194,49 @@ def cmd_nudge(args: argparse.Namespace) -> int:
     session = load_session_or_fail()
     request = require_pending_request(session, args.request_id, expected_method="select")
     require_select_option(request, "Nudge")
-    return send_request_response(
-        args,
-        args.request_id,
-        expected_method="select",
-        value="Nudge",
-        command_name="nudge",
-        message=f"selected Nudge for {args.request_id}",
-    )
+    if not has_text_source(args):
+        return send_request_response(
+            args,
+            args.request_id,
+            expected_method="select",
+            value="Nudge",
+            command_name="nudge",
+            message=f"selected Nudge for {args.request_id}",
+        )
+
+    nudge_text = read_text_source(args)
+    session = require_live_session()
+    request = require_pending_request(session, args.request_id, expected_method="select")
+    require_select_option(request, "Nudge")
+    existing_request_ids = {
+        request_id
+        for request_id in (
+            pending_request.get("id") for pending_request in ordered_pending_requests(session)
+        )
+        if isinstance(request_id, str)
+    }
+
+    select_payload = {"type": "extension_ui_response", "id": args.request_id, "value": "Nudge"}
+    send_payload(session, select_payload)
+
+    follow_up_request = wait_for_nudge_follow_up_request(session, existing_request_ids)
+    follow_up_request_id = str(follow_up_request["id"])
+    input_payload = {"type": "extension_ui_response", "id": follow_up_request_id, "value": nudge_text}
+    send_payload(session, input_payload)
+
+    if args.json:
+        return emit_json_data(
+            {
+                "ok": True,
+                "command": "nudge",
+                "request_id": args.request_id,
+                "follow_up_request_id": follow_up_request_id,
+                "sent": [select_payload, input_payload],
+            }
+        )
+
+    print(f"answered nudge {args.request_id} via input {follow_up_request_id}")
+    return 0
 
 
 def cmd_heuristic(args: argparse.Namespace) -> int:
@@ -1399,8 +1515,24 @@ def build_parser() -> argparse.ArgumentParser:
 
     add_select_command("approve", "answer a select request with Approve", cmd_approve)
     add_select_command("disapprove", "answer a select request with Disapprove", cmd_disapprove)
-    add_select_command("nudge", "answer a select request with Nudge", cmd_nudge)
     add_select_command("heuristic", "choose the heuristic suggestion option on a select request", cmd_heuristic)
+
+    nudge_parser = subparsers.add_parser(
+        "nudge",
+        help="answer a select request with Nudge, optionally including the nudge text",
+        description=(
+            "Send `Nudge` for a pending select request. If you also pass --text, --file, or --stdin, "
+            "babysitter will wait for the follow-up input request and answer it automatically."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    nudge_parser.add_argument("request_id", help="pending select request id")
+    nudge_source_group = nudge_parser.add_mutually_exclusive_group(required=False)
+    nudge_source_group.add_argument("--text", help="send inline nudge text after selecting Nudge")
+    nudge_source_group.add_argument("--file", help="read nudge text from file after selecting Nudge")
+    nudge_source_group.add_argument("--stdin", action="store_true", help="read nudge text from standard input")
+    nudge_parser.add_argument("--json", action="store_true", help="emit JSON success output")
+    nudge_parser.set_defaults(func=cmd_nudge)
 
     select_parser = subparsers.add_parser(
         "select",

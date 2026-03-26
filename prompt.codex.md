@@ -16,7 +16,7 @@ Codex-specific instructions:
 - do not poll on a timer or out of impatience; poll only when a concrete event trigger justifies checking state
 - if two consecutive polls return `no new messages`, do not immediately escalate to `--raw`; wait for a concrete reason to inspect wire output
 - use typed verbs first: `prompt`, `steer`, `follow-up`, `interrupt`, `abort`, `approve`, `disapprove`, `nudge`, `heuristic`, `input`, `edit`, `confirm`, `reject-confirm`, `cancel`, and `select`
-- for `Nudge`, remember the real flow is two-step: answer the `select` request with `nudge`, then answer the separate `input` request with `input --text` / `--file` / `--stdin`
+- for `Nudge`, prefer `nudge <id> --text ...` or `--file ...`; babysitter will handle the follow-up input request internally
 - use raw `babysitter send '<json>'` only when the typed commands do not fit
 - use `prompt` to start a run
 - use `steer` only while a run is still active and needs mid-course correction
@@ -126,8 +126,7 @@ Important:
       ```sh
       ./babysitter prompt --file task.md
       ./babysitter approve REQ123
-      ./babysitter nudge REQ124
-      ./babysitter input REQ125 --file nudge.txt
+      ./babysitter nudge REQ124 --file nudge.txt
       ```
 
     - `babysitter send` remains the raw escape hatch for uncommon payloads; if you use it for multiline content, build the JSON on one line:

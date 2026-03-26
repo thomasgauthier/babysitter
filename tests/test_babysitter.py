@@ -247,6 +247,76 @@ class BabysitterCliTests(unittest.TestCase):
             {"type": "extension_ui_response", "id": "REQ1", "value": "Nudge"},
         )
 
+    def test_cmd_nudge_with_text_auto_answers_follow_up_input(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            stdout_log = Path(tmpdir) / "stdout"
+            stdout_log.write_text(
+                json.dumps(
+                    {
+                        "type": "extension_ui_request",
+                        "id": "REQ2",
+                        "method": "input",
+                        "title": "Host Nudge",
+                        "placeholder": "Tell the agent what to do instead",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            session = {
+                "stdin_fifo": "/tmp/fake-fifo",
+                "stdout_log": str(stdout_log),
+                "poll_state": {
+                    "json": {"offset": 0, "pending": "", "carry_reasoning": "", "carry_assistant_text": ""},
+                    "pretty": {"offset": 0, "pending": "", "carry_reasoning": "", "carry_assistant_text": ""},
+                    "raw": {"offset": 0},
+                },
+                "runtime": {
+                    "pending_requests": {
+                        "REQ1": {"id": "REQ1", "method": "select", "options": ["Approve", "Disapprove", "Nudge"]}
+                    },
+                    "pending_request_order": ["REQ1"],
+                    "resolved_request_ids": [],
+                    "last_turn_state": "running",
+                },
+            }
+            sent_bodies = []
+
+            def capture_fifo(_path, body):
+                sent_bodies.append(json.loads(body))
+
+            with (
+                mock.patch.object(babysitter, "load_session_or_fail", return_value=session),
+                mock.patch.object(babysitter, "require_live_session", return_value=session),
+                mock.patch.object(babysitter, "write_fifo_line", side_effect=capture_fifo),
+                mock.patch.object(babysitter, "save_session"),
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                result = babysitter.cmd_nudge(
+                    argparse.Namespace(
+                        request_id="REQ1",
+                        text="Rewrite the cart from a clean TIC() loop.",
+                        file=None,
+                        stdin=False,
+                        json=False,
+                    )
+                )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(
+            sent_bodies,
+            [
+                {"type": "extension_ui_response", "id": "REQ1", "value": "Nudge"},
+                {
+                    "type": "extension_ui_response",
+                    "id": "REQ2",
+                    "value": "Rewrite the cart from a clean TIC() loop.",
+                },
+            ],
+        )
+        self.assertEqual(session["runtime"]["pending_requests"], {})
+        self.assertEqual(session["runtime"]["resolved_request_ids"], ["REQ1", "REQ2"])
+
     def test_cmd_interrupt_uses_abort_rpc_shape(self):
         session = {"runtime": {"last_turn_state": "running"}}
         captured = {}
@@ -314,6 +384,10 @@ class BabysitterCliTests(unittest.TestCase):
 
         args = parser.parse_args(["interrupt", "--json"])
         self.assertTrue(args.json)
+
+        args = parser.parse_args(["nudge", "REQ1", "--text", "Do the next bounded step."])
+        self.assertEqual(args.request_id, "REQ1")
+        self.assertEqual(args.text, "Do the next bounded step.")
 
 
 if __name__ == "__main__":
