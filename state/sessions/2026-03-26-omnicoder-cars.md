@@ -23,3 +23,10 @@
 - Launching `new` and `prompt` in parallel caused an operator-side race where `prompt` saw `no session metadata found`. Serial launch avoided it.
 - `babysitter poll --raw` exposed a large in-flight write request that filtered `poll`/`requests` did not make obvious during the first run.
 - Ending the run was better than approving structurally wrong Lua just to see runtime errors.
+
+## Addendum: `onyx-willow` And `ivory-glacier`
+
+- `onyx-willow`: approved the required skill read, observed the model drift into `love.load()` / `TIC.draw()` / `TIC.update()` reasoning, sent one exact `steer`, then saw only `response: command=steer success=True` followed by a silent `running` turn until `babysitter stop`.
+- `ivory-glacier`: approved the required skill read, observed a second wrong structural draft using `input.is_key_pressed`, `update()`, `draw()`, and `tick()`, sent one exact `steer`, then again saw a silent `running` turn with no new request until stop.
+- After stopping `ivory-glacier`, the unread tail surfaced a latent `write` request for `cars.lua`. The draft was not approvable: wrong TIC-80 API family, tiny 24x16 screen model, `tick()` instead of `function TIC()`, and a malformed palette block that used comma-separated colors instead of one 96-hex-character string.
+- Attempting `babysitter disapprove <id>` after the stop failed with `no active session`, so the timing edge matters operationally.
