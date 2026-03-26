@@ -85,6 +85,7 @@ The important babysitter commands are:
 - `prompt`
 - `steer`
 - `follow_up`
+- `interrupt`
 - `abort`
 
 Operationally:
@@ -121,7 +122,7 @@ It owns:
 - `pi` launch under the right shell semantics
 - persistent stdin/stdout transport
 - incremental stdout polling through filtered/merged `babysitter poll`
-- single-session lifecycle commands like `new`, `send`, `poll`, and `stop`
+- single-session lifecycle and operator commands like `new`, `status`, `requests`, `request`, `poll`, `prompt`, `steer`, `follow-up`, `interrupt`, typed request-response verbs, raw `send`, and `stop`
 
 So the babysitter does not need to manually manage FIFOs, `nohup`, or log offsets during normal operation.
 

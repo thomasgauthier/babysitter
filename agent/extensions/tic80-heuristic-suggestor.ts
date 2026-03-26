@@ -34,6 +34,18 @@ function includesAny(command: string, patterns: RegExp[]): boolean {
 	return patterns.some((pattern) => pattern.test(command));
 }
 
+function hasTrailingPaletteBlock(content: string): boolean {
+	return /--\s*<PALETTE>[\s\S]*--\s*000:[0-9a-fA-F]{96}[\s\S]*--\s*<\/PALETTE>\s*$/.test(content);
+}
+
+function hasStructuralTic80Drift(content: string): boolean {
+	return (
+		/\bfunction\s+(update|draw|input)\s*\(/i.test(content) ||
+		/\bTIC\.(width|height)\b/i.test(content) ||
+		/\b(drawtext|is_key_pressed)\b/i.test(content)
+	);
+}
+
 export function inferHeuristicSuggestion(event: ToolCallEvent, review: ReviewEvent): HeuristicSuggestion {
 	const bashCommand = getBashCommand(event);
 	const content = getWriteContent(event);
@@ -54,13 +66,25 @@ export function inferHeuristicSuggestion(event: ToolCallEvent, review: ReviewEve
 	}
 
 	if (review.bucket === "on_lua_change") {
+		if (typeof content === "string" && hasStructuralTic80Drift(content)) {
+			if (!/\bfunction\s+TIC\s*\(/i.test(content)) {
+				return {
+					decision: "disapprove",
+					reason: "structurally wrong TIC-80 cart shape",
+				};
+			}
+			return {
+				decision: "disapprove",
+				reason: "TIC-80 cart uses wrong helper family or coordinates",
+			};
+		}
 		if (typeof content === "string" && /\bpoke4?\s*\(/.test(content)) {
 			return {
 				decision: "disapprove",
 				reason: "runtime palette mutation risk",
 			};
 		}
-		if (typeof content === "string" && !/--\s*<PALETTE>[\s\S]*--\s*000:[0-9a-fA-F]{96}[\s\S]*--\s*<\/PALETTE>\s*$/.test(content)) {
+		if (typeof content === "string" && !hasTrailingPaletteBlock(content)) {
 			return {
 				decision: "nudge",
 				reason: "cart is missing a trailing static palette block",

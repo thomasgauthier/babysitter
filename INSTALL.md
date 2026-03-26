@@ -41,10 +41,17 @@ Use the operator workflow:
 
 ```sh
 ./babysitter new --model omnicoder-9b-iq3_xxs
+./babysitter status
 ./babysitter poll
-./babysitter send '{"type":"prompt","message":"..."}'
+./babysitter prompt --file task.md
+./babysitter requests
+./babysitter approve REQ123
 ./babysitter stop
 ```
+
+`babysitter poll --json` is the structured view; `--jsonl` remains only as a compatibility alias.
+
+Use `babysitter send '{"type":"..."}'` only when you need the raw JSON escape hatch.
 
 ## Prompt Entry Point
 

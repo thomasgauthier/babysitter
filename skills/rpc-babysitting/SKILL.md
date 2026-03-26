@@ -14,10 +14,15 @@ The operator-facing workflow is `babysitter`.
 Use it to start, observe, interact with, and stop a supervised run:
 
 - `babysitter new` to create a new run
-- `babysitter poll` to inspect the filtered/merged status and incoming events
+- `babysitter status` to inspect the current session state
+- `babysitter requests` to list pending extension UI requests
+- `babysitter request <id>` to inspect one request
+- `babysitter poll` to inspect unread events
+- `babysitter poll --json` to inspect filtered structured events
 - `babysitter poll --raw` to inspect raw output
-- `babysitter poll --jsonl` to inspect filtered JSONL
-- `babysitter send '<json>'` to send agent-control commands or extension UI responses
+- `babysitter poll --jsonl` only as a compatibility alias
+- typed commands like `prompt`, `steer`, `follow-up`, `interrupt`, `abort`, `approve`, `disapprove`, `nudge`, `heuristic`, `input`, `edit`, `confirm`, `reject-confirm`, `cancel`, and `select`
+- `babysitter send '<json>'` only as a raw JSON escape hatch
 - `babysitter stop` to end the run
 
 `babysitter new` guarantees the launch invariants for a run:
@@ -32,27 +37,29 @@ Use it to start, observe, interact with, and stop a supervised run:
 
 `babysitter` owns the launcher now. Use `babysitter new`, not a separate shell wrapper.
 
-Then supervise the run by polling for filtered/merged events by default, or with `--raw` / `--jsonl`, and sending JSON commands through `babysitter send '<json>'`.
+Then supervise the run with `status` / `requests` for current state, `poll` for unread events, `poll --json` for structured unread output, and typed commands for ordinary replies and steering.
 
-The filtered poll views surface approval request IDs directly, so ordinary approval handling should not require raw mode.
+The stored request views surface request IDs directly, so ordinary approval handling should not require raw mode or hand-written JSON.
 
 Compatibility alias:
 
 - `./babysit`
 
-For short `Approve` / `Disapprove` / `Nudge` responses, a one-line `babysitter send '<json>'` command is fine.
-
-For longer freeform `input` or `editor` payloads, do not hand-quote a long JSON string if you can avoid it. Use a heredoc-backed shell variable instead.
+Use typed commands first:
 
 ```sh
-payload=$(cat <<'EOF'
-{"type":"extension_ui_response","id":"REQ2","value":"Do not background tic80ctl start. Start it in the run directory, then load penguin.lua, then run it."}
-EOF
-)
-./babysitter send "$payload"
+./babysitter prompt --file task.md
+./babysitter approve REQ1
+./babysitter nudge REQ2
+./babysitter input REQ3 --file nudge.txt
 ```
 
-That avoids brittle shell quoting when the nudge text contains punctuation, quotes, or multiple sentences.
+For `Nudge`, remember the real flow is two-step:
+
+1. answer the `select` request with `babysitter nudge <id>`
+2. answer the separate `input` request with `babysitter input <id> --text ...` or `--file ...`
+
+Use `babysitter send` only when the typed commands do not fit.
 
 ## Role
 
@@ -101,8 +108,9 @@ Use them this way:
 
 - `prompt`: start a new run
 - `steer`: correct a run that is still actively underway
-- `follow_up`: optional post-run continuation message when you intentionally want a normal next turn after a completed run
-- `abort`: stop the current run
+- `follow_up`: optional post-run continuation message when you intentionally want a normal next turn after a completed run; the CLI command is `babysitter follow-up`
+- `interrupt`: same as pressing Esc in the UI; uses the RPC abort path without stopping the local babysitter process group
+- `abort`: stop the current run via the RPC abort path
 
 If the last visible state is `turn end (stop)` and later polls show no new activity, do not rely on `steer` to restart the model. Start a new run with `prompt`.
 
@@ -129,6 +137,16 @@ For the content:
 
 Reply with top-level `value` equal to one of the option strings.
 
+Preferred CLI:
+
+```sh
+./babysitter approve REQ1
+./babysitter disapprove REQ1
+./babysitter nudge REQ1
+./babysitter heuristic REQ1
+./babysitter select REQ1 --option "Approve"
+```
+
 ```json
 {"type":"extension_ui_response","id":"REQ1","value":"Approve"}
 ```
@@ -153,6 +171,12 @@ Reply with top-level `value` equal to one of the option strings.
 
 Reply with top-level `value`.
 
+Preferred CLI:
+
+```sh
+./babysitter input REQ2 --text "Do not debug tic80ctl. Continue the bounded workflow: load the cart, then run it."
+```
+
 The example text below is only illustrative. The `value` should contain whatever nudge or input actually fits the live situation.
 
 ```json
@@ -169,6 +193,12 @@ Or cancel:
 
 Reply with top-level `value`.
 
+Preferred CLI:
+
+```sh
+./babysitter edit REQ3 --file edited.txt
+```
+
 The example text below is only illustrative. The `value` should contain the actual edited text you want to submit.
 
 ```json
@@ -178,6 +208,14 @@ The example text below is only illustrative. The `value` should contain the actu
 ### `method: "confirm"`
 
 Reply with `confirmed`.
+
+Preferred CLI:
+
+```sh
+./babysitter confirm REQ4
+./babysitter reject-confirm REQ4
+./babysitter cancel REQ4
+```
 
 ```json
 {"type":"extension_ui_response","id":"REQ4","confirmed":true}
@@ -277,6 +315,8 @@ For TIC-80 coding runs, default to:
 
 - keep the model on a bounded `start -> load -> run -> eval/playtest` path
 - after a Lua write, push toward runtime verification instead of accepting file creation as success
+- if a Lua write still contains a known wrong TIC-80 structure, API family, or variable-scope mistake, disapprove it or give one exact nudge instead of approving it "to see what happens"
+- reserve nudges for local fixes; if the cart is structurally wrong again after one correction, stop approving and prefer bounded disapprove/stop behavior
 - once `tic80ctl` is known to exist, do not spend extra turns rediscovering it
 - prefer a direct session sequence in the run directory: `tic80ctl start`, then `tic80ctl load ...`, then `tic80ctl run`
 - do not casually background `tic80ctl start` with `&` unless there is a clear reason and no simpler foreground path

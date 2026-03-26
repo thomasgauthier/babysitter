@@ -17,7 +17,8 @@ STATE_DIR = Path(".local/babysitter")
 CURRENT_SESSION = STATE_DIR / "current_session.json"
 RUNS_DIR = Path("runs")
 EPHEMERAL_LINT_CONFIGS = {"selene.toml", "tic80.yml"}
-POLL_MODES = ("pretty", "raw", "jsonl")
+POLL_MODES = ("pretty", "raw", "json")
+ACTIONABLE_REQUEST_METHODS = {"select", "input", "editor", "confirm"}
 AGENT_DIR = Path("agent")
 SYSTEM_PROMPT_SOURCE = AGENT_DIR / "SYSTEM.md"
 EXTENSIONS_DIR = AGENT_DIR / "extensions"
@@ -115,6 +116,7 @@ def save_session(session: dict) -> None:
 
 def ensure_poll_state(session: dict) -> dict:
     state = session.setdefault("poll_state", {})
+    legacy_json_state = state.get("jsonl") if isinstance(state.get("jsonl"), dict) else None
     for mode in POLL_MODES:
         mode_state = state.setdefault(mode, {})
         mode_state.setdefault("offset", 0)
@@ -122,9 +124,75 @@ def ensure_poll_state(session: dict) -> dict:
             mode_state.setdefault("pending", "")
             mode_state.setdefault("carry_reasoning", "")
             mode_state.setdefault("carry_assistant_text", "")
+    if legacy_json_state:
+        json_state = state["json"]
+        for key in ("offset", "pending", "carry_reasoning", "carry_assistant_text"):
+            if key in legacy_json_state and not json_state.get(key):
+                json_state[key] = legacy_json_state.get(key)
     if "stdout_offset" in session:
         state["raw"]["offset"] = max(int(session.get("stdout_offset", 0)), int(state["raw"].get("offset", 0)))
     return state
+
+
+def ensure_runtime_state(session: dict) -> dict:
+    runtime = session.setdefault("runtime", {})
+
+    pending_requests = runtime.get("pending_requests")
+    if not isinstance(pending_requests, dict):
+        pending_requests = {}
+    runtime["pending_requests"] = pending_requests
+
+    pending_request_order = runtime.get("pending_request_order")
+    if not isinstance(pending_request_order, list):
+        pending_request_order = []
+    runtime["pending_request_order"] = pending_request_order
+
+    resolved_request_ids = runtime.get("resolved_request_ids")
+    if not isinstance(resolved_request_ids, list):
+        resolved_request_ids = []
+    runtime["resolved_request_ids"] = resolved_request_ids
+
+    last_turn_state = runtime.get("last_turn_state")
+    if not isinstance(last_turn_state, str) or not last_turn_state:
+        runtime["last_turn_state"] = "idle"
+
+    last_stop_reason = runtime.get("last_stop_reason")
+    if last_stop_reason is not None and not isinstance(last_stop_reason, str):
+        runtime["last_stop_reason"] = str(last_stop_reason)
+    return runtime
+
+
+def clear_pending_request(session: dict, request_id: str) -> None:
+    runtime = ensure_runtime_state(session)
+    runtime["pending_requests"].pop(request_id, None)
+    runtime["pending_request_order"] = [
+        pending_id for pending_id in runtime["pending_request_order"] if pending_id != request_id
+    ]
+
+
+def mark_request_resolved(session: dict, request_id: str) -> None:
+    runtime = ensure_runtime_state(session)
+    if request_id not in runtime["resolved_request_ids"]:
+        runtime["resolved_request_ids"].append(request_id)
+
+
+def ordered_pending_requests(session: dict) -> list[dict]:
+    runtime = ensure_runtime_state(session)
+    pending_requests = runtime["pending_requests"]
+    ordered: list[dict] = []
+    seen: set[str] = set()
+
+    for request_id in runtime["pending_request_order"]:
+        payload = pending_requests.get(request_id)
+        if isinstance(payload, dict):
+            ordered.append(payload)
+            seen.add(request_id)
+
+    for request_id, payload in pending_requests.items():
+        if request_id not in seen and isinstance(payload, dict):
+            ordered.append(payload)
+
+    return ordered
 
 
 def process_alive(pid: int | None) -> bool:
@@ -235,8 +303,13 @@ def mark_inactive(session: dict, reason: str | None = None) -> dict:
     session = dict(session)
     session["active"] = False
     session["stopped_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    runtime = ensure_runtime_state(session)
+    runtime["last_turn_state"] = "stopped"
+    runtime["pending_requests"] = {}
+    runtime["pending_request_order"] = []
     if reason:
         session["stop_reason"] = reason
+        runtime["last_stop_reason"] = reason
     return session
 
 
@@ -281,11 +354,18 @@ def cmd_new(args: argparse.Namespace) -> int:
         "launcher_pid": process.pid,
         "model": args.model,
         "poll_state": {
-            "jsonl": {"offset": 0, "pending": ""},
+            "json": {"offset": 0, "pending": ""},
             "pretty": {"offset": 0, "pending": ""},
             "raw": {"offset": 0},
         },
         "run_dir": str(run_dir),
+        "runtime": {
+            "last_stop_reason": None,
+            "last_turn_state": "idle",
+            "pending_request_order": [],
+            "pending_requests": {},
+            "resolved_request_ids": [],
+        },
         "session_name": session_name,
         "stderr_log": str(stderr_log),
         "stdin_fifo": str(stdin_fifo),
@@ -540,6 +620,64 @@ def build_semantic_events(lines: list[str], carry_reasoning: str = "", carry_ass
     return coalesced, "", ""
 
 
+def build_streaming_output_event(pending_text: str) -> dict:
+    return {
+        "type": "streaming_output",
+        "pending_bytes": len(pending_text.encode("utf-8")),
+        "preview": shorten(pending_text, 240),
+    }
+
+
+def apply_semantic_events_to_runtime(session: dict, events: list[dict]) -> None:
+    runtime = ensure_runtime_state(session)
+    resolved_request_ids = set(runtime["resolved_request_ids"])
+    for event in events:
+        event_type = event.get("type")
+        if event_type == "agent_start":
+            runtime.setdefault("last_turn_state", "idle")
+            continue
+        if event_type == "turn_start":
+            runtime["last_turn_state"] = "running"
+            runtime["last_stop_reason"] = None
+            continue
+        if event_type == "turn_end":
+            runtime["last_turn_state"] = "stopped"
+            runtime["last_stop_reason"] = event.get("stopReason")
+            continue
+        if event_type != "extension_ui_request":
+            continue
+
+        request_id = event.get("id")
+        method = event.get("method")
+        if not isinstance(request_id, str) or not request_id or method not in ACTIONABLE_REQUEST_METHODS:
+            continue
+        if request_id in resolved_request_ids:
+            continue
+
+        runtime["pending_requests"][request_id] = dict(event)
+        if request_id not in runtime["pending_request_order"]:
+            runtime["pending_request_order"].append(request_id)
+
+
+def annotate_request_events(session: dict, events: list[dict]) -> None:
+    runtime = ensure_runtime_state(session)
+    pending_request_ids = set(runtime["pending_requests"])
+    resolved_request_ids = set(runtime["resolved_request_ids"])
+
+    for event in events:
+        if event.get("type") != "extension_ui_request":
+            continue
+        request_id = event.get("id")
+        method = event.get("method")
+        if not isinstance(request_id, str) or not request_id or method not in ACTIONABLE_REQUEST_METHODS:
+            continue
+
+        is_pending = request_id in pending_request_ids
+        event["pending"] = is_pending
+        if not is_pending and request_id in resolved_request_ids:
+            event["resolved"] = True
+
+
 def render_ui_request_body(event: dict) -> str:
     lines: list[str] = []
     request_id = str(event.get("id") or "").strip()
@@ -577,6 +715,8 @@ def render_ui_request_body(event: dict) -> str:
             "type",
             "method",
             "id",
+            "pending",
+            "resolved",
             "title",
             "message",
             "text",
@@ -599,10 +739,13 @@ def format_pretty_event(event: dict) -> str:
     if event_type == "extension_ui_request":
         method = event.get("method")
         body = render_ui_request_body(event)
+        suffix = ", not pending" if event.get("pending") is False else ""
         if method == "select":
             options = " | ".join(str(option) for option in event.get("options", []))
-            return f"tool policy check:\n{body}\noptions: {options}" if body else f"tool policy check:\noptions: {options}"
-        return f"ui request ({method}):\n{body}" if body else f"ui request ({method})"
+            header = f"tool policy check{suffix}:"
+            return f"{header}\n{body}\noptions: {options}" if body else f"{header}\noptions: {options}"
+        header = f"ui request ({method}{suffix}):" if method else f"ui request{suffix}:"
+        return f"{header}\n{body}" if body else header.rstrip(":")
     if event_type == "host_policy_result":
         return f"tool policy result: {event.get('message')}"
     if event_type == "tool_execution_start":
@@ -636,6 +779,15 @@ def format_pretty_event(event: dict) -> str:
         if details:
             return f"{header}\n{json.dumps(details, ensure_ascii=False, indent=2)}"
         return header
+    if event_type == "streaming_output":
+        pending_bytes = event.get("pending_bytes")
+        preview = event.get("preview")
+        header = "streaming output buffered"
+        if isinstance(pending_bytes, int):
+            header = f"{header} ({pending_bytes} bytes)"
+        if isinstance(preview, str) and preview.strip():
+            return f"{header}:\n{preview}"
+        return header
     return json.dumps(event, ensure_ascii=False, indent=2)
 
 
@@ -648,19 +800,197 @@ def emit_pretty_events(events: list[dict]) -> int:
     return 0
 
 
-def emit_jsonl_events(events: list[dict]) -> int:
-    if not events:
-        print("no new messages")
+def emit_json_events(events: list[dict]) -> int:
+    print(json.dumps(events, ensure_ascii=False))
+    return 0
+
+
+def emit_json_data(payload: object) -> int:
+    print(json.dumps(payload, ensure_ascii=False))
+    return 0
+
+
+def load_session_or_fail() -> dict:
+    session = load_session()
+    if not session:
+        fail("no session metadata found")
+    return session
+
+
+def require_live_session() -> dict:
+    session = load_session_or_fail()
+    if not active_session(session):
+        fail("no active session")
+    if not process_alive(session.get("launcher_pid")):
+        save_session(mark_inactive(session, "process exited before send"))
+        fail("active session is stale; process is not running")
+    return session
+
+
+def read_text_source(args: argparse.Namespace) -> str:
+    sources = [
+        ("--text", getattr(args, "text", None)),
+        ("--file", getattr(args, "file", None)),
+        ("--stdin", getattr(args, "stdin", False)),
+    ]
+    selected = [name for name, value in sources if value not in (None, False)]
+    if len(selected) != 1:
+        fail("choose exactly one of --text, --file, or --stdin")
+
+    if getattr(args, "text", None) is not None:
+        text = str(args.text)
+    elif getattr(args, "file", None) is not None:
+        file_path = str(args.file)
+        if file_path == "-":
+            fail("use --stdin to read from standard input")
+        path = Path(file_path)
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            fail(f"could not read {path}: {exc}")
+    else:
+        text = sys.stdin.read()
+
+    if not text:
+        fail("message content is empty")
+    return text
+
+
+def send_payload(session: dict, payload: dict, raw_payload: str | None = None) -> None:
+    body = raw_payload if raw_payload is not None else json.dumps(payload, ensure_ascii=False)
+    write_fifo_line(Path(session["stdin_fifo"]), body)
+
+    if payload.get("type") == "extension_ui_response":
+        request_id = payload.get("id")
+        if isinstance(request_id, str) and request_id:
+            mark_request_resolved(session, request_id)
+            clear_pending_request(session, request_id)
+
+    save_session(session)
+
+
+def emit_command_success(args: argparse.Namespace, command: str, message: str, **details: object) -> int:
+    if getattr(args, "json", False):
+        payload = {"ok": True, "command": command}
+        payload.update(details)
+        return emit_json_data(payload)
+    print(message)
+    return 0
+
+
+def session_status_value(session: dict) -> str:
+    if session.get("active") and process_alive(session.get("launcher_pid")):
+        return "active"
+    if session.get("active"):
+        return "stale"
+    return "stopped"
+
+
+def status_payload(session: dict) -> dict:
+    runtime = ensure_runtime_state(session)
+    requests = ordered_pending_requests(session)
+    payload = {
+        "session_name": session.get("session_name"),
+        "status": session_status_value(session),
+        "model": session.get("model"),
+        "run_dir": session.get("run_dir"),
+        "turn_state": runtime.get("last_turn_state", "idle"),
+        "pending_request_count": len(requests),
+        "pending_request_ids": [request.get("id") for request in requests if request.get("id")],
+    }
+    stop_reason = runtime.get("last_stop_reason") or session.get("stop_reason")
+    if isinstance(stop_reason, str) and stop_reason:
+        payload["stop_reason"] = stop_reason
+    return payload
+
+
+def require_pending_request(session: dict, request_id: str, expected_method: str | None = None) -> dict:
+    runtime = ensure_runtime_state(session)
+    request = runtime["pending_requests"].get(request_id)
+    if not isinstance(request, dict):
+        fail(f"unknown request id {request_id}; run {cli_name()} requests")
+
+    method = request.get("method")
+    if expected_method and method != expected_method:
+        fail(f"request {request_id} is method={method}; expected {expected_method}")
+    return request
+
+
+def require_select_option(request: dict, option: str) -> None:
+    options = request.get("options")
+    if not isinstance(options, list) or option not in options:
+        fail(f"request {request.get('id')} does not offer option {option!r}")
+
+
+def send_request_response(
+    args: argparse.Namespace,
+    request_id: str,
+    *,
+    expected_method: str | None = None,
+    value: str | None = None,
+    confirmed: bool | None = None,
+    cancelled: bool = False,
+    command_name: str,
+    message: str,
+) -> int:
+    session = require_live_session()
+    request = require_pending_request(session, request_id, expected_method=expected_method)
+    payload: dict = {"type": "extension_ui_response", "id": request_id}
+    if cancelled:
+        payload["cancelled"] = True
+    elif confirmed is not None:
+        payload["confirmed"] = confirmed
+    else:
+        payload["value"] = value
+    send_payload(session, payload)
+    return emit_command_success(
+        args,
+        command_name,
+        message,
+        request_id=request_id,
+        method=request.get("method"),
+        sent=payload,
+    )
+
+
+def format_pending_requests_pretty(requests: list[dict]) -> str:
+    return "\n\n".join(format_pretty_event(request) for request in requests)
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    session = load_session_or_fail()
+    payload = status_payload(session)
+    if args.json:
+        return emit_json_data(payload)
+
+    lines = [
+        f"session: {payload.get('session_name')} [{payload.get('status')}]",
+        f"model: {payload.get('model')}",
+        f"run dir: {payload.get('run_dir')}",
+        f"turn: {payload.get('turn_state')}",
+        f"pending requests: {payload.get('pending_request_count')}",
+    ]
+    stop_reason = payload.get("stop_reason")
+    if stop_reason:
+        lines.append(f"stop reason: {stop_reason}")
+    print("\n".join(lines))
+    return 0
+
+
+def cmd_requests(args: argparse.Namespace) -> int:
+    session = load_session_or_fail()
+    requests = ordered_pending_requests(session)
+    if args.json:
+        return emit_json_data(requests)
+    if not requests:
+        print("no pending requests")
         return 0
-    for event in events:
-        print(json.dumps(event, ensure_ascii=False))
+    print(format_pending_requests_pretty(requests))
     return 0
 
 
 def cmd_poll(args: argparse.Namespace) -> int:
-    session = load_session()
-    if not session:
-        fail("no session metadata found")
+    session = load_session_or_fail()
 
     if args.raw:
         chunk = read_raw_chunk(session)
@@ -672,7 +1002,7 @@ def cmd_poll(args: argparse.Namespace) -> int:
             sys.stdout.write("\n")
         return 0
 
-    mode = "jsonl" if args.jsonl else "pretty"
+    mode = "json" if args.json else "pretty"
     lines = read_jsonl_lines(session, mode)
     poll_state = ensure_poll_state(session)
     mode_state = poll_state[mode]
@@ -681,25 +1011,210 @@ def cmd_poll(args: argparse.Namespace) -> int:
         str(mode_state.get("carry_reasoning", "")),
         str(mode_state.get("carry_assistant_text", "")),
     )
+    pending_text = str(mode_state.get("pending", ""))
+    apply_semantic_events_to_runtime(session, events)
+    annotate_request_events(session, events)
+    if pending_text:
+        events.append(build_streaming_output_event(pending_text))
     mode_state["carry_reasoning"] = carry_reasoning
     mode_state["carry_assistant_text"] = carry_assistant_text
     save_session(session)
-    if args.jsonl:
-        return emit_jsonl_events(events)
+    if args.json:
+        return emit_json_events(events)
     return emit_pretty_events(events)
 
 
-def cmd_send(args: argparse.Namespace) -> int:
-    session = load_session()
-    if not active_session(session):
-        fail("no active session")
-    if not process_alive(session.get("launcher_pid")):
-        save_session(mark_inactive(session, "process exited before send"))
-        fail("active session is stale; process is not running")
-
-    write_fifo_line(Path(session["stdin_fifo"]), args.payload)
-    print("sent")
+def cmd_request(args: argparse.Namespace) -> int:
+    session = load_session_or_fail()
+    request = require_pending_request(session, args.request_id)
+    if args.json:
+        return emit_json_data(request)
+    print(format_pretty_event(request))
     return 0
+
+
+def cmd_send(args: argparse.Namespace) -> int:
+    session = require_live_session()
+    try:
+        payload = json.loads(args.payload)
+    except json.JSONDecodeError as exc:
+        fail(f"invalid JSON payload: {exc}")
+    if not isinstance(payload, dict):
+        fail("payload must be one JSON object")
+
+    send_payload(session, payload, raw_payload=args.payload)
+    return emit_command_success(args, "send", "sent", sent=payload)
+
+
+def cmd_prompt(args: argparse.Namespace) -> int:
+    session = require_live_session()
+    payload = {"type": "prompt", "message": read_text_source(args)}
+    send_payload(session, payload)
+    return emit_command_success(args, "prompt", "sent prompt", sent=payload)
+
+
+def cmd_steer(args: argparse.Namespace) -> int:
+    session = require_live_session()
+    payload = {"type": "steer", "message": read_text_source(args)}
+    send_payload(session, payload)
+    return emit_command_success(args, "steer", "sent steer", sent=payload)
+
+
+def cmd_follow_up(args: argparse.Namespace) -> int:
+    session = require_live_session()
+    payload = {"type": "follow_up", "message": read_text_source(args)}
+    send_payload(session, payload)
+    return emit_command_success(args, "follow-up", "sent follow-up", sent=payload)
+
+
+def cmd_abort(args: argparse.Namespace) -> int:
+    session = require_live_session()
+    payload = {"type": "abort"}
+    send_payload(session, payload)
+    return emit_command_success(args, "abort", "sent abort", sent=payload)
+
+
+def cmd_interrupt(args: argparse.Namespace) -> int:
+    session = require_live_session()
+    payload = {"type": "abort"}
+    send_payload(session, payload)
+    return emit_command_success(args, "interrupt", "sent interrupt", sent=payload)
+
+
+def cmd_approve(args: argparse.Namespace) -> int:
+    session = load_session_or_fail()
+    request = require_pending_request(session, args.request_id, expected_method="select")
+    require_select_option(request, "Approve")
+    return send_request_response(
+        args,
+        args.request_id,
+        expected_method="select",
+        value="Approve",
+        command_name="approve",
+        message=f"approved {args.request_id}",
+    )
+
+
+def cmd_disapprove(args: argparse.Namespace) -> int:
+    session = load_session_or_fail()
+    request = require_pending_request(session, args.request_id, expected_method="select")
+    require_select_option(request, "Disapprove")
+    return send_request_response(
+        args,
+        args.request_id,
+        expected_method="select",
+        value="Disapprove",
+        command_name="disapprove",
+        message=f"disapproved {args.request_id}",
+    )
+
+
+def cmd_nudge(args: argparse.Namespace) -> int:
+    session = load_session_or_fail()
+    request = require_pending_request(session, args.request_id, expected_method="select")
+    require_select_option(request, "Nudge")
+    return send_request_response(
+        args,
+        args.request_id,
+        expected_method="select",
+        value="Nudge",
+        command_name="nudge",
+        message=f"selected Nudge for {args.request_id}",
+    )
+
+
+def cmd_heuristic(args: argparse.Namespace) -> int:
+    session = load_session_or_fail()
+    request = require_pending_request(session, args.request_id, expected_method="select")
+    options = request.get("options")
+    if not isinstance(options, list):
+        fail(f"request {args.request_id} does not expose selectable options")
+    heuristic_option = next(
+        (option for option in options if isinstance(option, str) and option.startswith("Heuristic Suggestion")),
+        None,
+    )
+    if not heuristic_option:
+        fail(f"request {args.request_id} does not offer a heuristic suggestion option")
+    return send_request_response(
+        args,
+        args.request_id,
+        expected_method="select",
+        value=heuristic_option,
+        command_name="heuristic",
+        message=f"selected heuristic for {args.request_id}",
+    )
+
+
+def cmd_select(args: argparse.Namespace) -> int:
+    session = load_session_or_fail()
+    request = require_pending_request(session, args.request_id, expected_method="select")
+    require_select_option(request, args.option)
+    return send_request_response(
+        args,
+        args.request_id,
+        expected_method="select",
+        value=args.option,
+        command_name="select",
+        message=f"selected {args.option!r} for {args.request_id}",
+    )
+
+
+def cmd_input(args: argparse.Namespace) -> int:
+    return send_request_response(
+        args,
+        args.request_id,
+        expected_method="input",
+        value=read_text_source(args),
+        command_name="input",
+        message=f"answered input {args.request_id}",
+    )
+
+
+def cmd_edit(args: argparse.Namespace) -> int:
+    return send_request_response(
+        args,
+        args.request_id,
+        expected_method="editor",
+        value=read_text_source(args),
+        command_name="edit",
+        message=f"answered editor {args.request_id}",
+    )
+
+
+def cmd_confirm(args: argparse.Namespace) -> int:
+    return send_request_response(
+        args,
+        args.request_id,
+        expected_method="confirm",
+        confirmed=True,
+        command_name="confirm",
+        message=f"confirmed {args.request_id}",
+    )
+
+
+def cmd_reject_confirm(args: argparse.Namespace) -> int:
+    return send_request_response(
+        args,
+        args.request_id,
+        expected_method="confirm",
+        confirmed=False,
+        command_name="reject-confirm",
+        message=f"rejected confirm {args.request_id}",
+    )
+
+
+def cmd_cancel(args: argparse.Namespace) -> int:
+    session = load_session_or_fail()
+    request = require_pending_request(session, args.request_id)
+    if request.get("method") not in ACTIONABLE_REQUEST_METHODS:
+        fail(f"request {args.request_id} is not cancellable")
+    return send_request_response(
+        args,
+        args.request_id,
+        cancelled=True,
+        command_name="cancel",
+        message=f"cancelled {args.request_id}",
+    )
 
 
 def stop_process_group(pid: int) -> None:
@@ -749,8 +1264,9 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=(
             "Typical loop:\n"
             f"  {prog} new --model omnicoder-9b-iq3_xxs\n"
+            f"  {prog} prompt --file task.md\n"
+            f"  {prog} status\n"
             f"  {prog} poll\n"
-            f"  {prog} send '{{\"type\":\"prompt\",\"message\":\"...\"}}'\n"
             f"  {prog} stop"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -773,13 +1289,38 @@ def build_parser() -> argparse.ArgumentParser:
     new_parser.add_argument("extra_args", nargs=argparse.REMAINDER)
     new_parser.set_defaults(func=cmd_new)
 
+    status_parser = subparsers.add_parser(
+        "status",
+        help="show current session state without consuming unread output",
+        description="Show the last known session state, turn state, and pending request count.",
+    )
+    status_parser.add_argument("--json", action="store_true", help="emit one JSON object")
+    status_parser.set_defaults(func=cmd_status)
+
+    requests_parser = subparsers.add_parser(
+        "requests",
+        help="list pending extension UI requests",
+        description="List stored actionable extension UI requests without consuming unread output.",
+    )
+    requests_parser.add_argument("--json", action="store_true", help="emit a JSON array")
+    requests_parser.set_defaults(func=cmd_requests)
+
+    request_parser = subparsers.add_parser(
+        "request",
+        help="show one pending extension UI request by id",
+        description="Print one stored extension UI request from the runtime cache.",
+    )
+    request_parser.add_argument("request_id", help="pending request id")
+    request_parser.add_argument("--json", action="store_true", help="emit one JSON object")
+    request_parser.set_defaults(func=cmd_request)
+
     poll_parser = subparsers.add_parser(
         "poll",
         help="read new session output; pretty filtered view by default",
         description=(
             "Read only new stdout from the active session.\n"
             "Default mode is filtered/merged pretty output.\n"
-            "Use --jsonl for filtered semantic JSONL or --raw for exact unread wire output."
+            "Use --json for filtered semantic events or --raw for exact unread wire output."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -790,32 +1331,146 @@ def build_parser() -> argparse.ArgumentParser:
         help="print exact unread stdout bytes without filtering or reformatting",
     )
     poll_group.add_argument(
-        "--jsonl",
+        "--json",
+        dest="json",
         action="store_true",
-        help="print filtered semantic JSONL instead of pretty formatted output",
+        help="print filtered semantic events as JSON instead of pretty formatted output",
     )
+    poll_group.add_argument("--jsonl", dest="json", action="store_true", help=argparse.SUPPRESS)
     poll_parser.set_defaults(func=cmd_poll)
+
+    def add_text_command(name: str, help_text: str, description: str, handler) -> None:
+        command_parser = subparsers.add_parser(
+            name,
+            help=help_text,
+            description=description,
+            formatter_class=argparse.RawDescriptionHelpFormatter,
+        )
+        source_group = command_parser.add_mutually_exclusive_group(required=True)
+        source_group.add_argument("--text", help="send inline text")
+        source_group.add_argument("--file", help="read text from file")
+        source_group.add_argument("--stdin", action="store_true", help="read text from standard input")
+        command_parser.add_argument("--json", action="store_true", help="emit JSON success output")
+        command_parser.set_defaults(func=handler)
+
+    add_text_command(
+        "prompt",
+        "send a prompt command without hand-writing JSON",
+        "Send a `prompt` command. Choose exactly one of --text, --file, or --stdin.",
+        cmd_prompt,
+    )
+    add_text_command(
+        "steer",
+        "send a steer command without hand-writing JSON",
+        "Send a `steer` command. Choose exactly one of --text, --file, or --stdin.",
+        cmd_steer,
+    )
+    add_text_command(
+        "follow-up",
+        "send a follow_up command without hand-writing JSON",
+        "Send a `follow_up` command. Choose exactly one of --text, --file, or --stdin.",
+        cmd_follow_up,
+    )
+
+    abort_parser = subparsers.add_parser(
+        "abort",
+        help="send an abort command to the active run",
+        description="Send the RPC `abort` command without stopping the local babysitter process group.",
+    )
+    abort_parser.add_argument("--json", action="store_true", help="emit JSON success output")
+    abort_parser.set_defaults(func=cmd_abort)
+
+    interrupt_parser = subparsers.add_parser(
+        "interrupt",
+        help="interrupt the active run like pressing Esc in the UI",
+        description=(
+            "Interrupt the active run using the same RPC abort path as the UI interrupt key. "
+            "This does not stop the local babysitter process group."
+        ),
+    )
+    interrupt_parser.add_argument("--json", action="store_true", help="emit JSON success output")
+    interrupt_parser.set_defaults(func=cmd_interrupt)
+
+    def add_select_command(name: str, help_text: str, handler) -> None:
+        command_parser = subparsers.add_parser(name, help=help_text, description=help_text)
+        command_parser.add_argument("request_id", help="pending select request id")
+        command_parser.add_argument("--json", action="store_true", help="emit JSON success output")
+        command_parser.set_defaults(func=handler)
+
+    add_select_command("approve", "answer a select request with Approve", cmd_approve)
+    add_select_command("disapprove", "answer a select request with Disapprove", cmd_disapprove)
+    add_select_command("nudge", "answer a select request with Nudge", cmd_nudge)
+    add_select_command("heuristic", "choose the heuristic suggestion option on a select request", cmd_heuristic)
+
+    select_parser = subparsers.add_parser(
+        "select",
+        help="answer a select request with an exact option string",
+        description="Send an exact top-level `value` for a pending select request.",
+    )
+    select_parser.add_argument("request_id", help="pending select request id")
+    select_parser.add_argument("--option", required=True, help="exact option string from the request")
+    select_parser.add_argument("--json", action="store_true", help="emit JSON success output")
+    select_parser.set_defaults(func=cmd_select)
+
+    def add_text_response_command(name: str, help_text: str, handler) -> None:
+        command_parser = subparsers.add_parser(name, help=help_text, description=help_text)
+        command_parser.add_argument("request_id", help=f"pending {name} request id")
+        source_group = command_parser.add_mutually_exclusive_group(required=True)
+        source_group.add_argument("--text", help="send inline text")
+        source_group.add_argument("--file", help="read text from file")
+        source_group.add_argument("--stdin", action="store_true", help="read text from standard input")
+        command_parser.add_argument("--json", action="store_true", help="emit JSON success output")
+        command_parser.set_defaults(func=handler)
+
+    add_text_response_command("input", "answer an input request with text", cmd_input)
+    add_text_response_command("edit", "answer an editor request with text", cmd_edit)
+
+    confirm_parser = subparsers.add_parser(
+        "confirm",
+        help="answer a confirm request with true",
+        description="Confirm a pending confirm request.",
+    )
+    confirm_parser.add_argument("request_id", help="pending confirm request id")
+    confirm_parser.add_argument("--json", action="store_true", help="emit JSON success output")
+    confirm_parser.set_defaults(func=cmd_confirm)
+
+    reject_confirm_parser = subparsers.add_parser(
+        "reject-confirm",
+        help="answer a confirm request with false",
+        description="Reject a pending confirm request.",
+    )
+    reject_confirm_parser.add_argument("request_id", help="pending confirm request id")
+    reject_confirm_parser.add_argument("--json", action="store_true", help="emit JSON success output")
+    reject_confirm_parser.set_defaults(func=cmd_reject_confirm)
+
+    cancel_parser = subparsers.add_parser(
+        "cancel",
+        help="cancel a pending request",
+        description="Send `cancelled: true` for a pending actionable request.",
+    )
+    cancel_parser.add_argument("request_id", help="pending request id")
+    cancel_parser.add_argument("--json", action="store_true", help="emit JSON success output")
+    cancel_parser.set_defaults(func=cmd_cancel)
 
     send_parser = subparsers.add_parser(
         "send",
         help="send one JSON command to the active session stdin",
         description=(
             "Send one full JSON payload to the active session.\n"
-            "Use for prompt, steer, follow_up, abort, and extension_ui_response."
+            "Use this as the raw escape hatch when the typed commands do not fit."
         ),
         epilog=(
-            "Short payload example:\n"
-            f"  {prog} send '{{\"type\":\"extension_ui_response\",\"id\":\"REQ\",\"value\":\"Approve\"}}'\n\n"
-            "Safer pattern for long input/editor payloads:\n"
-            "  payload=$(cat <<'EOF'\n"
-            "  {\"type\":\"extension_ui_response\",\"id\":\"REQ\",\"value\":\"...long text...\"}\n"
-            "  EOF\n"
-            "  )\n"
-            f"  {prog} send \"$payload\""
+            "Preferred commands:\n"
+            f"  {prog} prompt --file task.md\n"
+            f"  {prog} approve REQ123\n"
+            f"  {prog} input REQ124 --file nudge.txt\n\n"
+            "Raw payload example:\n"
+            f"  {prog} send '{{\"type\":\"extension_ui_response\",\"id\":\"REQ\",\"value\":\"Approve\"}}'"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     send_parser.add_argument("payload", help="one complete JSON payload to write to session stdin")
+    send_parser.add_argument("--json", action="store_true", help="emit JSON success output")
     send_parser.set_defaults(func=cmd_send)
 
     stop_parser = subparsers.add_parser(

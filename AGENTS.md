@@ -10,8 +10,10 @@ There is no formal build step. Use these commands from the repo root:
 
 - `python3 ./babysitter --help`: inspect CLI usage.
 - `./babysitter new --model omnicoder-9b-iq3_xxs`: start a supervised run.
-- `./babysitter poll`: read filtered run state and approval requests.
-- `./babysitter send '{"type":"prompt","message":"..."}'`: send a control command or UI response.
+- `./babysitter status`: inspect current session and turn state.
+- `./babysitter requests`: list pending extension UI requests.
+- `./babysitter prompt --file task.md`: send a prompt without hand-writing JSON.
+- `./babysitter poll --json`: read unread structured events.
 - `./babysitter stop`: stop the active run.
 - `python3 --version && jq --version && pi --help && tic80ctl --help`: verify local prerequisites from [`INSTALL.md`](/workspace/babysitter/INSTALL.md).
 
@@ -92,14 +94,6 @@ bd close bd-42 --reason "Completed" --json
    - `bd create "Found bug" --description="Details about what was found" -p 1 --deps discovered-from:<parent-id>`
 5. **Complete**: `bd close <id> --reason "Done"`
 
-### Auto-Sync
-
-bd automatically syncs via Dolt:
-
-- Each write auto-commits to Dolt history
-- Use `bd dolt push`/`bd dolt pull` for remote sync
-- No manual export/import needed!
-
 ### Important Rules
 
 - ✅ Use bd for ALL task tracking
@@ -114,28 +108,24 @@ For more details, see README.md and docs/QUICKSTART.md.
 
 ## Landing the Plane (Session Completion)
 
-**When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.
+**When ending a work session**, you MUST complete ALL steps below before handing off local work.
 
 **MANDATORY WORKFLOW:**
 
 1. **File issues for remaining work** - Create issues for anything that needs follow-up
 2. **Run quality gates** (if code changed) - Tests, linters, builds
 3. **Update issue status** - Close finished work, update in-progress items
-4. **PUSH TO REMOTE** - This is MANDATORY:
+4. **Leave the local repo coherent**:
    ```bash
-   git pull --rebase
-   bd sync
-   git push
-   git status  # MUST show "up to date with origin"
+   git status
    ```
-5. **Clean up** - Clear stashes, prune remote branches
-6. **Verify** - All changes committed AND pushed
+5. **Clean up** - Clear temporary stashes or throwaway artifacts you created
+6. **Verify** - Confirm the worktree state matches your handoff
 7. **Hand off** - Provide context for next session
 
 **CRITICAL RULES:**
-- Work is NOT complete until `git push` succeeds
-- NEVER stop before pushing - that leaves work stranded locally
-- NEVER say "ready to push when you are" - YOU must push
-- If push fails, resolve and retry until it succeeds
+- Work is local-first; do not assume remote sync is available or required
+- Do not claim the tree is clean if you are leaving local changes behind
+- Be explicit about what is committed, uncommitted, and still pending
 
 <!-- END BEADS INTEGRATION -->

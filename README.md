@@ -5,15 +5,21 @@ Babysitter is a CLI and extension stack for supervising coding agents over `pi -
 It supports a host-in-the-loop workflow:
 
 - start a supervised run with `babysitter new`
-- watch progress with `babysitter poll` for the filtered/merged view
+- inspect state with `babysitter status`
+- list pending requests with `babysitter requests`
+- inspect one request with `babysitter request <id>`
+- watch progress with `babysitter poll`
+- use `babysitter poll --json` for filtered structured output
 - use `babysitter poll --raw` for raw output
-- use `babysitter poll --jsonl` for filtered JSONL
-- respond to the run with `babysitter send '<json>'`
+- use `babysitter poll --jsonl` only for compatibility
+- send agent-control commands with typed verbs like `prompt`, `steer`, `follow-up`, `interrupt`, and `abort`
+- answer requests with typed verbs like `approve`, `disapprove`, `heuristic`, `input`, `edit`, `confirm`, `reject-confirm`, `cancel`, or `select`
+- use `babysitter send '<json>'` only as a raw escape hatch
 - stop the run with `babysitter stop`
 - run a weaker coding model inside `pi --mode rpc`
 - supervise it live from a stronger babysitter
 - intercept meaningful actions with extensions
-- choose `approve`, `disapprove`, `nudge`, or `heuristic suggestion`
+- choose `Approve`, `Disapprove`, `Nudge`, or `Heuristic Suggestion (...)`
 - log those choices
 - improve the heuristic harness until it agrees with the babysitter more often
 - periodically cash that out into real downstream task success
@@ -22,7 +28,7 @@ The current proving ground is TIC-80 game creation with `tic80ctl`, but the runt
 
 The operator-facing path is `babysitter`.
 
-`babysitter poll` and `babysitter poll --jsonl` surface approval request IDs directly, so common approval handling does not require dropping to raw mode.
+`babysitter status`, `babysitter requests`, and `babysitter request <id>` are the primary inspection commands. `babysitter poll` is for unread output tails, and `babysitter send` is only for raw JSON payloads when the typed verbs do not fit.
 
 Compatibility alias:
 
@@ -47,7 +53,7 @@ The current extension stack is:
 - [START_HERE.md](/workspace/babysitter/START_HERE.md)
   First document to read in this repo.
 - [SKILL.md](/workspace/babysitter/skills/rpc-babysitting/SKILL.md)
-  Execution manual for supervising RPC runs, including the `babysitter`-first workflow, safe long-form `babysitter send` patterns, and the `prompt` vs `steer` rule.
+  Execution manual for supervising RPC runs, including the `babysitter`-first workflow, typed request handling, and the `prompt` vs `steer` rule.
 - [state/README.md](/workspace/babysitter/state/README.md)
   Filesystem-backed memory and note-taking instructions for future babysitters.
 
@@ -64,6 +70,6 @@ The current extension stack is:
 - [agent](/workspace/babysitter/agent)
   Git-friendly home for the project system prompt, extension stack, and workspace template.
 - [babysitter](/workspace/babysitter/babysitter)
-  Stdlib CLI for creating, polling, sending to, and stopping supervised RPC sessions.
+  Stdlib CLI for creating, inspecting, steering, replying to, and stopping supervised RPC sessions.
 - [state](/workspace/babysitter/state)
   Persistent notes for operator findings, model quirks, and harness lessons.
