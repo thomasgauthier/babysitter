@@ -1,0 +1,7 @@
+std = "lua51+tic80"
+
+[lints]
+unscoped_variables = "allow"
+undefined_variable = "allow"
+unused_variable = "allow"
+multiple_statements = "allow"

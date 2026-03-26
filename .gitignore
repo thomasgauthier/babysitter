@@ -1,0 +1,9 @@
+.local/
+runs/
+__pycache__/
+*.pyc
+nohup.out
+stdout
+stderr
+playtest/
+

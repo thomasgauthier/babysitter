@@ -1,0 +1,840 @@
+#!/usr/bin/env python3
+
+import argparse
+import json
+import os
+import shlex
+import shutil
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+
+DEFAULT_MODEL = "omnicoder-9b-iq3_xxs"
+STATE_DIR = Path(".local/babysitter")
+CURRENT_SESSION = STATE_DIR / "current_session.json"
+RUNS_DIR = Path("runs")
+EPHEMERAL_LINT_CONFIGS = {"selene.toml", "tic80.yml"}
+POLL_MODES = ("pretty", "raw", "jsonl")
+AGENT_DIR = Path("agent")
+SYSTEM_PROMPT_SOURCE = AGENT_DIR / "SYSTEM.md"
+EXTENSIONS_DIR = AGENT_DIR / "extensions"
+WORKSPACE_TEMPLATE_DIR = AGENT_DIR / "workspace"
+
+ADJECTIVES = [
+    "amber",
+    "brisk",
+    "cobalt",
+    "daring",
+    "ember",
+    "frozen",
+    "golden",
+    "hazy",
+    "ivory",
+    "jade",
+    "keen",
+    "lunar",
+    "mellow",
+    "noble",
+    "onyx",
+    "polar",
+    "quiet",
+    "rapid",
+    "solar",
+    "tidy",
+    "umbra",
+    "vivid",
+    "wild",
+]
+
+NOUNS = [
+    "aurora",
+    "badger",
+    "comet",
+    "delta",
+    "ember",
+    "falcon",
+    "glacier",
+    "harbor",
+    "island",
+    "juniper",
+    "kingfisher",
+    "lantern",
+    "meadow",
+    "needle",
+    "orbit",
+    "penguin",
+    "quarry",
+    "rocket",
+    "summit",
+    "thicket",
+    "upland",
+    "valley",
+    "willow",
+]
+
+
+def eprint(message: str) -> None:
+    print(message, file=sys.stderr)
+
+
+def fail(message: str, exit_code: int = 1) -> None:
+    eprint(message)
+    raise SystemExit(exit_code)
+
+
+def repo_root() -> Path:
+    return Path(__file__).resolve().parent
+
+
+def cli_name() -> str:
+    return Path(sys.argv[0]).name or "babysitter"
+
+
+def state_path() -> Path:
+    return repo_root() / STATE_DIR / CURRENT_SESSION.name
+
+
+def ensure_state_dir() -> None:
+    (repo_root() / STATE_DIR).mkdir(parents=True, exist_ok=True)
+
+
+def load_session() -> dict | None:
+    path = state_path()
+    if not path.exists():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def save_session(session: dict) -> None:
+    ensure_state_dir()
+    state_path().write_text(json.dumps(session, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def ensure_poll_state(session: dict) -> dict:
+    state = session.setdefault("poll_state", {})
+    for mode in POLL_MODES:
+        mode_state = state.setdefault(mode, {})
+        mode_state.setdefault("offset", 0)
+        if mode != "raw":
+            mode_state.setdefault("pending", "")
+            mode_state.setdefault("carry_reasoning", "")
+            mode_state.setdefault("carry_assistant_text", "")
+    if "stdout_offset" in session:
+        state["raw"]["offset"] = max(int(session.get("stdout_offset", 0)), int(state["raw"].get("offset", 0)))
+    return state
+
+
+def process_alive(pid: int | None) -> bool:
+    if not pid:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def active_session(session: dict | None) -> dict | None:
+    if not session:
+        return None
+    if not session.get("active"):
+        return None
+    return session
+
+
+def stale_active_session(session: dict | None) -> bool:
+    return bool(session and session.get("active") and not process_alive(session.get("launcher_pid")))
+
+
+def choose_session_name() -> str:
+    base = int(time.time())
+    adj = ADJECTIVES[base % len(ADJECTIVES)]
+    noun = NOUNS[(base // len(ADJECTIVES)) % len(NOUNS)]
+    root = repo_root() / RUNS_DIR
+    root.mkdir(parents=True, exist_ok=True)
+    candidate = f"{adj}-{noun}"
+    if not (root / candidate).exists():
+        return candidate
+    suffix = 2
+    while (root / f"{candidate}-{suffix}").exists():
+        suffix += 1
+    return f"{candidate}-{suffix}"
+
+
+def copy_workspace_template(run_dir: Path) -> None:
+    src = repo_root() / WORKSPACE_TEMPLATE_DIR
+    if not src.is_dir():
+        fail(f"missing workspace template: {src}")
+    run_dir.mkdir(parents=True, exist_ok=True)
+    for entry in src.iterdir():
+        if entry.name in EPHEMERAL_LINT_CONFIGS:
+            continue
+        target = run_dir / entry.name
+        if entry.is_dir():
+            shutil.copytree(entry, target, dirs_exist_ok=True)
+        else:
+            shutil.copy2(entry, target)
+
+
+def seed_project_system_prompt(run_dir: Path) -> None:
+    source = repo_root() / SYSTEM_PROMPT_SOURCE
+    if not source.is_file():
+        fail(f"missing system prompt source: {source}")
+    target = run_dir / ".pi" / "SYSTEM.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, target)
+
+
+def build_pi_command(run_dir: Path, model: str, extra_args: list[str]) -> str:
+    cmd = [
+        "pi",
+        "--mode",
+        "rpc",
+        "--no-extensions",
+        "-e",
+        str(repo_root() / EXTENSIONS_DIR / "live-host-approval.ts"),
+        "-e",
+        str(repo_root() / EXTENSIONS_DIR / "selene-on-lua-write.ts"),
+        "--no-skills",
+        "--skill",
+        str(repo_root() / "skills" / "tic80ctl-usage"),
+        "--no-prompt-templates",
+        "--model",
+        model,
+        *extra_args,
+    ]
+    escaped = " ".join(shlex.quote(part) for part in cmd)
+    return f"cd {shlex.quote(str(run_dir))} && {escaped}"
+
+
+def build_launch_command(run_dir: Path, stdin_fifo: Path, model: str, extra_args: list[str]) -> str:
+    pi_command = build_pi_command(run_dir, model, extra_args)
+    return f"tail -f -- {shlex.quote(str(stdin_fifo))} | bash -lc {shlex.quote(pi_command)}"
+
+
+def write_fifo_line(fifo_path: Path, payload: str) -> None:
+    data = payload if payload.endswith("\n") else f"{payload}\n"
+    try:
+        fd = os.open(fifo_path, os.O_WRONLY | os.O_NONBLOCK)
+    except FileNotFoundError:
+        fail(f"stdin fifo is missing: {fifo_path}")
+    except OSError as exc:
+        fail(f"could not open stdin fifo for writing: {exc}")
+    try:
+        os.write(fd, data.encode("utf-8"))
+    finally:
+        os.close(fd)
+
+
+def mark_inactive(session: dict, reason: str | None = None) -> dict:
+    session = dict(session)
+    session["active"] = False
+    session["stopped_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    if reason:
+        session["stop_reason"] = reason
+    return session
+
+
+def cmd_new(args: argparse.Namespace) -> int:
+    session = load_session()
+    if active_session(session) and process_alive(session.get("launcher_pid")):
+        fail(f"active session already exists: {session['session_name']} at {session['run_dir']}")
+    if stale_active_session(session):
+        save_session(mark_inactive(session, "stale session replaced by babysitter new"))
+
+    session_name = choose_session_name()
+    run_dir = repo_root() / RUNS_DIR / session_name
+    stdin_fifo = run_dir / "stdin"
+    stdout_log = run_dir / "stdout"
+    stderr_log = run_dir / "stderr"
+
+    copy_workspace_template(run_dir)
+    seed_project_system_prompt(run_dir)
+    stdout_log.touch()
+    stderr_log.touch()
+    if stdin_fifo.exists():
+        stdin_fifo.unlink()
+    os.mkfifo(stdin_fifo)
+
+    command = build_launch_command(run_dir, stdin_fifo, args.model, args.extra_args)
+    with stdout_log.open("ab") as stdout_handle, stderr_log.open("ab") as stderr_handle:
+        process = subprocess.Popen(
+            ["nohup", "bash", "-lc", command],
+            cwd=repo_root(),
+            stdin=subprocess.DEVNULL,
+            stdout=stdout_handle,
+            stderr=stderr_handle,
+            start_new_session=True,
+        )
+    time.sleep(0.3)
+    if process.poll() is not None:
+        fail(f"launch failed; inspect {stderr_log}")
+
+    session_data = {
+        "active": True,
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "launcher_pid": process.pid,
+        "model": args.model,
+        "poll_state": {
+            "jsonl": {"offset": 0, "pending": ""},
+            "pretty": {"offset": 0, "pending": ""},
+            "raw": {"offset": 0},
+        },
+        "run_dir": str(run_dir),
+        "session_name": session_name,
+        "stderr_log": str(stderr_log),
+        "stdin_fifo": str(stdin_fifo),
+        "stdout_log": str(stdout_log),
+        "stdout_offset": 0,
+    }
+    save_session(session_data)
+    print(f"new session {session_name} started at {run_dir}")
+    return 0
+
+
+def read_new_bytes(stdout_log: Path, offset: int) -> tuple[bytes, int]:
+    size = stdout_log.stat().st_size
+    if size < offset:
+        offset = 0
+    with stdout_log.open("rb") as handle:
+        handle.seek(offset)
+        chunk = handle.read()
+    return chunk, offset + len(chunk)
+
+
+def read_raw_chunk(session: dict) -> bytes:
+    stdout_log = Path(session["stdout_log"])
+    if not stdout_log.exists():
+        fail(f"stdout log is missing: {stdout_log}")
+
+    poll_state = ensure_poll_state(session)
+    mode_state = poll_state["raw"]
+    chunk, next_offset = read_new_bytes(stdout_log, int(mode_state.get("offset", 0)))
+    mode_state["offset"] = next_offset
+    session["stdout_offset"] = next_offset
+    save_session(session)
+    return chunk
+
+
+def read_jsonl_lines(session: dict, mode: str) -> list[str]:
+    stdout_log = Path(session["stdout_log"])
+    if not stdout_log.exists():
+        fail(f"stdout log is missing: {stdout_log}")
+
+    poll_state = ensure_poll_state(session)
+    mode_state = poll_state[mode]
+    chunk, next_offset = read_new_bytes(stdout_log, int(mode_state.get("offset", 0)))
+    pending = str(mode_state.get("pending", ""))
+    text = pending + chunk.decode("utf-8", errors="replace")
+
+    if not text:
+        mode_state["offset"] = next_offset
+        mode_state["pending"] = pending
+        save_session(session)
+        return []
+
+    lines = text.splitlines(keepends=True)
+    complete_lines: list[str] = []
+    next_pending = ""
+
+    for line in lines:
+        if line.endswith("\n") or line.endswith("\r"):
+            complete_lines.append(line.rstrip("\r\n"))
+        else:
+            next_pending += line
+
+    mode_state["offset"] = next_offset
+    mode_state["pending"] = next_pending
+    save_session(session)
+    return complete_lines
+
+
+def extract_text_content(payload: dict | None) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    content = payload.get("content")
+    if not isinstance(content, list):
+        return ""
+    parts: list[str] = []
+    for item in content:
+        if isinstance(item, dict) and item.get("type") == "text":
+            text = item.get("text")
+            if isinstance(text, str):
+                parts.append(text)
+    return "".join(parts)
+
+
+def shorten(text: str, max_length: int = 160) -> str:
+    normalized = " ".join(text.split())
+    if len(normalized) <= max_length:
+        return normalized
+    return f"{normalized[: max_length - 3]}..."
+
+
+def flush_buffer(events: list[dict], kind: str, parts: list[str]) -> None:
+    text = "".join(parts)
+    if text.strip():
+        events.append({"type": kind, "text": text})
+    parts.clear()
+
+
+def flush_message_buffers(events: list[dict], reasoning_parts: list[str], assistant_parts: list[str]) -> None:
+    flush_buffer(events, "reasoning", reasoning_parts)
+    flush_buffer(events, "assistant_text", assistant_parts)
+
+
+def translate_event(obj: dict, reasoning_parts: list[str], assistant_parts: list[str], translated: list[dict]) -> None:
+    event_type = obj.get("type")
+    if event_type == "message_update":
+        assistant_event = obj.get("assistantMessageEvent", {})
+        assistant_event_type = assistant_event.get("type")
+        if assistant_event_type == "thinking_delta":
+            delta = assistant_event.get("delta")
+            if isinstance(delta, str):
+                reasoning_parts.append(delta)
+        elif assistant_event_type == "text_delta":
+            delta = assistant_event.get("delta")
+            if isinstance(delta, str):
+                assistant_parts.append(delta)
+        return
+
+    if event_type in {"message_start", "message_end"}:
+        return
+
+    if event_type == "extension_ui_request":
+        method = obj.get("method")
+        if method in {"setStatus", "setWidget", "setTitle"}:
+            return
+        if method == "notify":
+            message = obj.get("message")
+            if isinstance(message, str) and message.startswith("[host] "):
+                flush_message_buffers(translated, reasoning_parts, assistant_parts)
+                translated.append(
+                    {
+                        "type": "host_policy_result",
+                        "message": message.removeprefix("[host] ").strip(),
+                    }
+                )
+                return
+            # Preserve non-host notifications in filtered views.
+        flush_message_buffers(translated, reasoning_parts, assistant_parts)
+        entry = {"type": "extension_ui_request", "method": method}
+        for key, value in obj.items():
+            if key in {"type", "method"}:
+                continue
+            if isinstance(value, (str, int, float, bool)) or value is None or isinstance(value, (list, dict)):
+                entry[key] = value
+        translated.append(entry)
+        return
+
+    if event_type == "tool_execution_start":
+        flush_message_buffers(translated, reasoning_parts, assistant_parts)
+        translated.append(
+            {
+                "type": "tool_execution_start",
+                "toolName": obj.get("toolName"),
+                "args": obj.get("args", {}),
+            }
+        )
+        return
+
+    if event_type == "tool_execution_update":
+        flush_message_buffers(translated, reasoning_parts, assistant_parts)
+        content = extract_text_content(obj.get("partialResult"))
+        if content.strip():
+            translated.append(
+                {
+                    "type": "tool_execution_update",
+                    "toolCallId": obj.get("toolCallId"),
+                    "toolName": obj.get("toolName"),
+                    "text": content,
+                }
+            )
+        return
+
+    if event_type == "tool_execution_end":
+        flush_message_buffers(translated, reasoning_parts, assistant_parts)
+        translated.append(
+            {
+                "type": "tool_execution_end",
+                "toolCallId": obj.get("toolCallId"),
+                "toolName": obj.get("toolName"),
+                "isError": bool(obj.get("isError")),
+                "text": extract_text_content(obj.get("result")),
+            }
+        )
+        return
+
+    if event_type in {"agent_start", "turn_start", "turn_end", "response"}:
+        flush_message_buffers(translated, reasoning_parts, assistant_parts)
+        if event_type == "turn_end":
+            translated.append(
+                {
+                    "type": "turn_end",
+                    "stopReason": obj.get("message", {}).get("stopReason"),
+                }
+            )
+            return
+        if event_type == "response":
+            entry = {"type": "response", "command": obj.get("command"), "success": obj.get("success")}
+            details = {key: value for key, value in obj.items() if key not in {"type", "command", "success"}}
+            if details:
+                entry["details"] = details
+            translated.append(entry)
+            return
+        translated.append({"type": event_type})
+
+
+def build_semantic_events(lines: list[str], carry_reasoning: str = "", carry_assistant_text: str = "") -> tuple[list[dict], str, str]:
+    translated: list[dict] = []
+    reasoning_parts: list[str] = [carry_reasoning] if carry_reasoning else []
+    assistant_parts: list[str] = [carry_assistant_text] if carry_assistant_text else []
+
+    for line in lines:
+        raw = line.strip()
+        if not raw:
+            continue
+        try:
+            obj = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        translate_event(obj, reasoning_parts, assistant_parts, translated)
+
+    flush_message_buffers(translated, reasoning_parts, assistant_parts)
+
+    deduped: list[dict] = []
+    skip_indexes: set[int] = set()
+    for index, event in enumerate(translated):
+        if event.get("type") != "tool_execution_update":
+            continue
+        tool_call_id = event.get("toolCallId")
+        if not tool_call_id:
+            continue
+        for next_index in range(index + 1, len(translated)):
+            candidate = translated[next_index]
+            if candidate.get("type") == "tool_execution_end" and candidate.get("toolCallId") == tool_call_id:
+                if candidate.get("text") == event.get("text"):
+                    skip_indexes.add(index)
+                break
+    for index, event in enumerate(translated):
+        if index not in skip_indexes:
+            deduped.append(event)
+
+    coalesced: list[dict] = []
+    for event in deduped:
+        if (
+            coalesced
+            and event.get("type") in {"reasoning", "assistant_text"}
+            and coalesced[-1].get("type") == event.get("type")
+        ):
+            coalesced[-1]["text"] = f"{coalesced[-1].get('text', '')}{event.get('text', '')}"
+            continue
+        coalesced.append(event)
+    return coalesced, "", ""
+
+
+def render_ui_request_body(event: dict) -> str:
+    lines: list[str] = []
+    request_id = str(event.get("id") or "").strip()
+    if request_id:
+        lines.append(f"request id: {request_id}")
+
+    title = event.get("title")
+    if isinstance(title, str) and title.strip():
+        lines.append(title.rstrip())
+
+    message = event.get("message")
+    if isinstance(message, str) and message.strip():
+        normalized_title = title.strip() if isinstance(title, str) else ""
+        normalized_message = message.strip()
+        if normalized_message != normalized_title:
+            lines.append(normalized_message)
+
+    text = event.get("text")
+    if isinstance(text, str) and text.strip():
+        lines.append(f"text:\n{text.rstrip()}")
+
+    value = event.get("value")
+    if isinstance(value, str) and value.strip():
+        lines.append(f"value:\n{value.rstrip()}")
+
+    placeholder = event.get("placeholder")
+    if isinstance(placeholder, str) and placeholder.strip():
+        lines.append(f"placeholder: {placeholder.rstrip()}")
+
+    extras = {
+        key: value
+        for key, value in event.items()
+        if key
+        not in {
+            "type",
+            "method",
+            "id",
+            "title",
+            "message",
+            "text",
+            "value",
+            "placeholder",
+            "options",
+        }
+    }
+    if extras:
+        lines.append(json.dumps(extras, ensure_ascii=False, indent=2))
+    return "\n".join(lines)
+
+
+def format_pretty_event(event: dict) -> str:
+    event_type = event.get("type")
+    if event_type == "reasoning":
+        return f"reasoning:\n{event['text'].rstrip()}"
+    if event_type == "assistant_text":
+        return f"assistant:\n{event['text'].rstrip()}"
+    if event_type == "extension_ui_request":
+        method = event.get("method")
+        body = render_ui_request_body(event)
+        if method == "select":
+            options = " | ".join(str(option) for option in event.get("options", []))
+            return f"tool policy check:\n{body}\noptions: {options}" if body else f"tool policy check:\noptions: {options}"
+        return f"ui request ({method}):\n{body}" if body else f"ui request ({method})"
+    if event_type == "host_policy_result":
+        return f"tool policy result: {event.get('message')}"
+    if event_type == "tool_execution_start":
+        args = event.get("args", {})
+        if isinstance(args, dict) and args:
+            arg_parts = ", ".join(f"{key}={repr(value)}" for key, value in args.items())
+            return f"tool start: {event.get('toolName')}({arg_parts})"
+        return f"tool start: {event.get('toolName')}"
+    if event_type == "tool_execution_update":
+        text = str(event.get("text", "")).rstrip()
+        return (
+            f"tool output: {event.get('toolName')}\n{text}"
+            if text
+            else f"tool output: {event.get('toolName')}"
+        )
+    if event_type == "tool_execution_end":
+        status = "error" if event.get("isError") else "ok"
+        text = str(event.get("text", "")).rstrip()
+        header = f"tool output: {event.get('toolName')} [{status}]"
+        return f"{header}\n{text}" if text else header
+    if event_type == "agent_start":
+        return "agent start"
+    if event_type == "turn_start":
+        return "turn start"
+    if event_type == "turn_end":
+        stop_reason = event.get("stopReason")
+        return f"turn end ({stop_reason})" if stop_reason else "turn end"
+    if event_type == "response":
+        details = event.get("details")
+        header = f"response: command={event.get('command')} success={event.get('success')}"
+        if details:
+            return f"{header}\n{json.dumps(details, ensure_ascii=False, indent=2)}"
+        return header
+    return json.dumps(event, ensure_ascii=False, indent=2)
+
+
+def emit_pretty_events(events: list[dict]) -> int:
+    if not events:
+        print("no new messages")
+        return 0
+    sys.stdout.write("\n\n".join(format_pretty_event(event) for event in events))
+    sys.stdout.write("\n")
+    return 0
+
+
+def emit_jsonl_events(events: list[dict]) -> int:
+    if not events:
+        print("no new messages")
+        return 0
+    for event in events:
+        print(json.dumps(event, ensure_ascii=False))
+    return 0
+
+
+def cmd_poll(args: argparse.Namespace) -> int:
+    session = load_session()
+    if not session:
+        fail("no session metadata found")
+
+    if args.raw:
+        chunk = read_raw_chunk(session)
+        if not chunk:
+            print("no new messages")
+            return 0
+        sys.stdout.write(chunk.decode("utf-8", errors="replace"))
+        if chunk and not chunk.endswith(b"\n"):
+            sys.stdout.write("\n")
+        return 0
+
+    mode = "jsonl" if args.jsonl else "pretty"
+    lines = read_jsonl_lines(session, mode)
+    poll_state = ensure_poll_state(session)
+    mode_state = poll_state[mode]
+    events, carry_reasoning, carry_assistant_text = build_semantic_events(
+        lines,
+        str(mode_state.get("carry_reasoning", "")),
+        str(mode_state.get("carry_assistant_text", "")),
+    )
+    mode_state["carry_reasoning"] = carry_reasoning
+    mode_state["carry_assistant_text"] = carry_assistant_text
+    save_session(session)
+    if args.jsonl:
+        return emit_jsonl_events(events)
+    return emit_pretty_events(events)
+
+
+def cmd_send(args: argparse.Namespace) -> int:
+    session = load_session()
+    if not active_session(session):
+        fail("no active session")
+    if not process_alive(session.get("launcher_pid")):
+        save_session(mark_inactive(session, "process exited before send"))
+        fail("active session is stale; process is not running")
+
+    write_fifo_line(Path(session["stdin_fifo"]), args.payload)
+    print("sent")
+    return 0
+
+
+def stop_process_group(pid: int) -> None:
+    try:
+        os.killpg(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    deadline = time.time() + 2.0
+    while time.time() < deadline:
+        if not process_alive(pid):
+            return
+        time.sleep(0.1)
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return
+
+
+def cmd_stop(_args: argparse.Namespace) -> int:
+    session = load_session()
+    if not active_session(session):
+        fail("no active session")
+
+    fifo_path = Path(session["stdin_fifo"])
+    if fifo_path.exists() and process_alive(session.get("launcher_pid")):
+        try:
+            write_fifo_line(fifo_path, json.dumps({"type": "abort"}))
+        except SystemExit:
+            pass
+        time.sleep(0.3)
+
+    pid = session.get("launcher_pid")
+    if pid and process_alive(pid):
+        stop_process_group(pid)
+
+    session = mark_inactive(session, "stopped by babysitter stop")
+    save_session(session)
+    print(f"stopped {session['session_name']}")
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    prog = cli_name()
+    parser = argparse.ArgumentParser(
+        prog=prog,
+        description="Operate one local babysitting session over pi --mode rpc.",
+        epilog=(
+            "Typical loop:\n"
+            f"  {prog} new --model omnicoder-9b-iq3_xxs\n"
+            f"  {prog} poll\n"
+            f"  {prog} send '{{\"type\":\"prompt\",\"message\":\"...\"}}'\n"
+            f"  {prog} stop"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    new_parser = subparsers.add_parser(
+        "new",
+        help="create a fresh run directory and launch a supervised RPC session",
+        description=(
+            "Create a fresh run directory under runs/, seed it from agent/workspace/, "
+            "and launch pi --mode rpc with the babysitter extensions."
+        ),
+    )
+    new_parser.add_argument(
+        "--model",
+        default=DEFAULT_MODEL,
+        help=f"small model to launch inside pi (default: {DEFAULT_MODEL})",
+    )
+    new_parser.add_argument("extra_args", nargs=argparse.REMAINDER)
+    new_parser.set_defaults(func=cmd_new)
+
+    poll_parser = subparsers.add_parser(
+        "poll",
+        help="read new session output; pretty filtered view by default",
+        description=(
+            "Read only new stdout from the active session.\n"
+            "Default mode is filtered/merged pretty output.\n"
+            "Use --jsonl for filtered semantic JSONL or --raw for exact unread wire output."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    poll_group = poll_parser.add_mutually_exclusive_group()
+    poll_group.add_argument(
+        "--raw",
+        action="store_true",
+        help="print exact unread stdout bytes without filtering or reformatting",
+    )
+    poll_group.add_argument(
+        "--jsonl",
+        action="store_true",
+        help="print filtered semantic JSONL instead of pretty formatted output",
+    )
+    poll_parser.set_defaults(func=cmd_poll)
+
+    send_parser = subparsers.add_parser(
+        "send",
+        help="send one JSON command to the active session stdin",
+        description=(
+            "Send one full JSON payload to the active session.\n"
+            "Use for prompt, steer, follow_up, abort, and extension_ui_response."
+        ),
+        epilog=(
+            "Short payload example:\n"
+            f"  {prog} send '{{\"type\":\"extension_ui_response\",\"id\":\"REQ\",\"value\":\"Approve\"}}'\n\n"
+            "Safer pattern for long input/editor payloads:\n"
+            "  payload=$(cat <<'EOF'\n"
+            "  {\"type\":\"extension_ui_response\",\"id\":\"REQ\",\"value\":\"...long text...\"}\n"
+            "  EOF\n"
+            "  )\n"
+            f"  {prog} send \"$payload\""
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    send_parser.add_argument("payload", help="one complete JSON payload to write to session stdin")
+    send_parser.set_defaults(func=cmd_send)
+
+    stop_parser = subparsers.add_parser(
+        "stop",
+        help="stop the active session and keep run artifacts on disk",
+        description="Stop the active session. Logs and run directory are preserved for later inspection.",
+    )
+    stop_parser.set_defaults(func=cmd_stop)
+
+    return parser
+
+
+def main() -> int:
+    parser = build_parser()
+    args = parser.parse_args()
+    if getattr(args, "extra_args", None) and args.extra_args and args.extra_args[0] == "--":
+        args.extra_args = args.extra_args[1:]
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
