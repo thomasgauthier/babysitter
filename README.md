@@ -8,7 +8,7 @@ It supports a host-in-the-loop workflow:
 - inspect state with `babysitter status`
 - list pending requests with `babysitter requests`
 - inspect one request with `babysitter request <id>`
-- watch progress with `babysitter poll`
+- watch progress with blocking `babysitter poll`
 - use `babysitter poll --json` for filtered structured output
 - use `babysitter poll --raw` for raw output
 - use `babysitter poll --jsonl` only for compatibility
@@ -28,7 +28,9 @@ The current proving ground is TIC-80 game creation with `tic80ctl`, but the runt
 
 The operator-facing path is `babysitter`.
 
-`babysitter status`, `babysitter requests`, and `babysitter request <id>` are the primary inspection commands. `babysitter poll` is for unread output tails, and `babysitter send` is only for raw JSON payloads when the typed verbs do not fit.
+`babysitter status`, `babysitter requests`, and `babysitter request <id>` are the primary inspection commands. `babysitter poll` is the long-poll inspection command: when the turn is running it waits for new output, and when the turn is idle or stopped it behaves like a one-shot unread drain. `babysitter send` is only for raw JSON payloads when the typed verbs do not fit.
+
+The canonical reference for what filtered `babysitter poll` surfaces, preserves, rewrites, or hides lives in [INSTALL.md](/workspace/babysitter/INSTALL.md).
 
 Compatibility alias:
 
@@ -40,7 +42,7 @@ It now owns:
 - boilerplate seeding
 - `pi --mode rpc` launch
 - persistent stdin/stdout transport
-- incremental stdout polling through filtered/merged `babysitter poll`
+- filtered/merged long-poll output through `babysitter poll`
 
 The current extension stack is:
 

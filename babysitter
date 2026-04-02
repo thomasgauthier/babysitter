@@ -21,6 +21,8 @@ POLL_MODES = ("pretty", "raw", "json")
 ACTIONABLE_REQUEST_METHODS = {"select", "input", "editor", "confirm"}
 HIDDEN_SYNC_POLL_MODE = "_sync"
 NUDGE_FOLLOW_UP_TIMEOUT_SECONDS = 5.0
+DEFAULT_POLL_TIMEOUT_SECONDS = 300.0
+POLL_WAIT_INTERVAL_SECONDS = 0.1
 AGENT_DIR = Path("agent")
 SYSTEM_PROMPT_SOURCE = AGENT_DIR / "SYSTEM.md"
 EXTENSIONS_DIR = AGENT_DIR / "extensions"
@@ -86,6 +88,16 @@ def eprint(message: str) -> None:
 def fail(message: str, exit_code: int = 1) -> None:
     eprint(message)
     raise SystemExit(exit_code)
+
+
+def parse_timeout_seconds(value: str) -> float:
+    try:
+        timeout = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"invalid timeout value: {value!r}") from exc
+    if timeout < 0:
+        raise argparse.ArgumentTypeError("timeout must be non-negative")
+    return timeout
 
 
 def repo_root() -> Path:
@@ -398,7 +410,7 @@ def read_new_bytes(stdout_log: Path, offset: int) -> tuple[bytes, int]:
     return chunk, offset + len(chunk)
 
 
-def read_raw_chunk(session: dict) -> bytes:
+def read_raw_chunk(session: dict) -> tuple[bytes, bool]:
     stdout_log = Path(session["stdout_log"])
     if not stdout_log.exists():
         fail(f"stdout log is missing: {stdout_log}")
@@ -409,10 +421,10 @@ def read_raw_chunk(session: dict) -> bytes:
     mode_state["offset"] = next_offset
     session["stdout_offset"] = next_offset
     save_session(session)
-    return chunk
+    return chunk, bool(chunk)
 
 
-def read_jsonl_lines(session: dict, mode: str) -> list[str]:
+def read_jsonl_lines(session: dict, mode: str) -> tuple[list[str], bool]:
     stdout_log = Path(session["stdout_log"])
     if not stdout_log.exists():
         fail(f"stdout log is missing: {stdout_log}")
@@ -423,6 +435,7 @@ def read_jsonl_lines(session: dict, mode: str) -> list[str]:
     else:
         mode_state = poll_state[mode]
     chunk, next_offset = read_new_bytes(stdout_log, int(mode_state.get("offset", 0)))
+    saw_activity = bool(chunk)
     pending = str(mode_state.get("pending", ""))
     text = pending + chunk.decode("utf-8", errors="replace")
 
@@ -430,7 +443,7 @@ def read_jsonl_lines(session: dict, mode: str) -> list[str]:
         mode_state["offset"] = next_offset
         mode_state["pending"] = pending
         save_session(session)
-        return []
+        return [], saw_activity
 
     lines = text.splitlines(keepends=True)
     complete_lines: list[str] = []
@@ -445,7 +458,7 @@ def read_jsonl_lines(session: dict, mode: str) -> list[str]:
     mode_state["offset"] = next_offset
     mode_state["pending"] = next_pending
     save_session(session)
-    return complete_lines
+    return complete_lines, saw_activity
 
 
 def extract_text_content(payload: dict | None) -> str:
@@ -824,6 +837,20 @@ def emit_json_data(payload: object) -> int:
     return 0
 
 
+def should_block_poll(session: dict) -> bool:
+    runtime = ensure_runtime_state(session)
+    return runtime.get("last_turn_state") == "running" and bool(
+        session.get("active") and process_alive(session.get("launcher_pid"))
+    )
+
+
+def sleep_poll_interval(deadline: float) -> None:
+    remaining = max(0.0, deadline - time.monotonic())
+    if remaining <= 0:
+        return
+    time.sleep(min(POLL_WAIT_INTERVAL_SECONDS, remaining))
+
+
 def load_session_or_fail() -> dict:
     session = load_session()
     if not session:
@@ -892,7 +919,7 @@ def send_payload(session: dict, payload: dict, raw_payload: str | None = None) -
 
 
 def refresh_runtime_from_log(session: dict, mode: str = HIDDEN_SYNC_POLL_MODE) -> list[dict]:
-    lines = read_jsonl_lines(session, mode)
+    lines, _ = read_jsonl_lines(session, mode)
     poll_state = ensure_poll_state(session)
     mode_state = poll_state[mode]
     events, carry_reasoning, carry_assistant_text = build_semantic_events(
@@ -1072,37 +1099,48 @@ def cmd_requests(args: argparse.Namespace) -> int:
 
 def cmd_poll(args: argparse.Namespace) -> int:
     session = load_session_or_fail()
+    deadline = time.monotonic() + args.timeout
 
     if args.raw:
-        chunk = read_raw_chunk(session)
-        if not chunk:
-            print("no new messages")
-            return 0
-        sys.stdout.write(chunk.decode("utf-8", errors="replace"))
-        if chunk and not chunk.endswith(b"\n"):
-            sys.stdout.write("\n")
-        return 0
+        while True:
+            chunk, saw_activity = read_raw_chunk(session)
+            if chunk:
+                sys.stdout.write(chunk.decode("utf-8", errors="replace"))
+                if not chunk.endswith(b"\n"):
+                    sys.stdout.write("\n")
+                return 0
+            if not should_block_poll(session) or time.monotonic() >= deadline:
+                print("no new messages")
+                return 0
+            if saw_activity:
+                deadline = time.monotonic() + args.timeout
+            sleep_poll_interval(deadline)
 
     mode = "json" if args.json else "pretty"
-    lines = read_jsonl_lines(session, mode)
-    poll_state = ensure_poll_state(session)
-    mode_state = poll_state[mode]
-    events, carry_reasoning, carry_assistant_text = build_semantic_events(
-        lines,
-        str(mode_state.get("carry_reasoning", "")),
-        str(mode_state.get("carry_assistant_text", "")),
-    )
-    pending_text = str(mode_state.get("pending", ""))
-    apply_semantic_events_to_runtime(session, events)
-    annotate_request_events(session, events)
-    if pending_text:
-        events.append(build_streaming_output_event(pending_text))
-    mode_state["carry_reasoning"] = carry_reasoning
-    mode_state["carry_assistant_text"] = carry_assistant_text
-    save_session(session)
-    if args.json:
-        return emit_json_events(events)
-    return emit_pretty_events(events)
+    while True:
+        lines, saw_activity = read_jsonl_lines(session, mode)
+        poll_state = ensure_poll_state(session)
+        mode_state = poll_state[mode]
+        events, carry_reasoning, carry_assistant_text = build_semantic_events(
+            lines,
+            str(mode_state.get("carry_reasoning", "")),
+            str(mode_state.get("carry_assistant_text", "")),
+        )
+        apply_semantic_events_to_runtime(session, events)
+        annotate_request_events(session, events)
+        mode_state["carry_reasoning"] = carry_reasoning
+        mode_state["carry_assistant_text"] = carry_assistant_text
+        save_session(session)
+        if events:
+            if args.json:
+                return emit_json_events(events)
+            return emit_pretty_events(events)
+        if not should_block_poll(session) or time.monotonic() >= deadline:
+            print("no new messages")
+            return 0
+        if saw_activity:
+            deadline = time.monotonic() + args.timeout
+        sleep_poll_interval(deadline)
 
 
 def cmd_request(args: argparse.Namespace) -> int:
@@ -1432,9 +1470,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     poll_parser = subparsers.add_parser(
         "poll",
-        help="read new session output; pretty filtered view by default",
+        help="wait for new session output; pretty filtered view by default",
         description=(
             "Read only new stdout from the active session.\n"
+            "If the current turn is running, wait for new output until semantic events arrive or the timeout expires.\n"
             "Default mode is filtered/merged pretty output.\n"
             "Use --json for filtered semantic events or --raw for exact unread wire output."
         ),
@@ -1453,6 +1492,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="print filtered semantic events as JSON instead of pretty formatted output",
     )
     poll_group.add_argument("--jsonl", dest="json", action="store_true", help=argparse.SUPPRESS)
+    poll_parser.add_argument(
+        "--timeout",
+        "--timemout",
+        type=parse_timeout_seconds,
+        default=DEFAULT_POLL_TIMEOUT_SECONDS,
+        help="wait up to this many seconds for new output while the turn is running (default: 300)",
+    )
     poll_parser.set_defaults(func=cmd_poll)
 
     def add_text_command(name: str, help_text: str, description: str, handler) -> None:

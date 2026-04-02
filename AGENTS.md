@@ -13,7 +13,7 @@ There is no formal build step. Use these commands from the repo root:
 - `./babysitter status`: inspect current session and turn state.
 - `./babysitter requests`: list pending extension UI requests.
 - `./babysitter prompt --file task.md`: send a prompt without hand-writing JSON.
-- `./babysitter poll --json`: read unread structured events.
+- `./babysitter poll --json --timeout 300`: read filtered structured events; while a turn is running this waits for new semantic output until activity stops or the timeout expires.
 - `./babysitter stop`: stop the active run.
 - `python3 --version && jq --version && pi --help && tic80ctl --help`: verify local prerequisites from [`INSTALL.md`](/workspace/babysitter/INSTALL.md).
 

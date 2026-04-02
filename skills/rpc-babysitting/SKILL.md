@@ -17,10 +17,11 @@ Use it to start, observe, interact with, and stop a supervised run:
 - `babysitter status` to inspect the current session state
 - `babysitter requests` to list pending extension UI requests
 - `babysitter request <id>` to inspect one request
-- `babysitter poll` to inspect unread events
-- `babysitter poll --json` to inspect filtered structured events
+- `babysitter poll` to wait for new semantic events while a turn is running, or drain unread events once when the turn is idle or stopped
+- `babysitter poll --json` to inspect the same filtered structured events with the same blocking behavior
 - `babysitter poll --raw` to inspect raw output
 - `babysitter poll --jsonl` only as a compatibility alias
+- `babysitter poll --timeout 300` to override the default 5 minute inactivity window when needed
 - typed commands like `prompt`, `steer`, `follow-up`, `interrupt`, `abort`, `approve`, `disapprove`, `nudge`, `heuristic`, `input`, `edit`, `confirm`, `reject-confirm`, `cancel`, and `select`
 - `babysitter send '<json>'` only as a raw JSON escape hatch
 - `babysitter stop` to end the run
@@ -33,11 +34,11 @@ Use it to start, observe, interact with, and stop a supervised run:
 - `pi` launched from inside that directory
 - login-shell launch semantics so the babysat agent inherits the operator environment
 - persistent transport for stdin/stdout
-- incremental stdout polling through filtered/merged `babysitter poll`
+- filtered/merged long-poll stdout inspection through `babysitter poll`
 
 `babysitter` owns the launcher now. Use `babysitter new`, not a separate shell wrapper.
 
-Then supervise the run with `status` / `requests` for current state, `poll` for unread events, `poll --json` for structured unread output, and typed commands for ordinary replies and steering.
+Then supervise the run with `status` / `requests` for current state, `poll` for long-poll semantic output, `poll --json` for the same structured output, and typed commands for ordinary replies and steering.
 
 The stored request views surface request IDs directly, so ordinary approval handling should not require raw mode or hand-written JSON.
 
