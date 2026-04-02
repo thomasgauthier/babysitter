@@ -13,13 +13,13 @@ It supports a host-in-the-loop workflow:
 - use `babysitter poll --raw` for raw output
 - use `babysitter poll --jsonl` only for compatibility
 - send agent-control commands with typed verbs like `prompt`, `steer`, `follow-up`, `interrupt`, and `abort`
-- answer requests with typed verbs like `approve`, `disapprove`, `heuristic`, `input`, `edit`, `confirm`, `reject-confirm`, `cancel`, or `select`
+- answer requests with typed verbs like `approve`, `reject`, `nudge`, `heuristic`, `input`, `edit`, `confirm`, `reject-confirm`, `cancel`, or `select`
 - use `babysitter send '<json>'` only as a raw escape hatch
 - stop the run with `babysitter stop`
 - run a weaker coding model inside `pi --mode rpc`
 - supervise it live from a stronger babysitter
 - intercept meaningful actions with extensions
-- choose `Approve`, `Disapprove`, `Nudge`, or `Heuristic Suggestion (...)`
+- choose `Approve`, `Reject`, `Nudge`, or `Heuristic Suggestion (...)`
 - log those choices
 - improve the heuristic harness until it agrees with the babysitter more often
 - periodically cash that out into real downstream task success

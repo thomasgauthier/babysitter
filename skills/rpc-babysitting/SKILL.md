@@ -22,7 +22,7 @@ Use it to start, observe, interact with, and stop a supervised run:
 - `babysitter poll --raw` to inspect raw output
 - `babysitter poll --jsonl` only as a compatibility alias
 - `babysitter poll --timeout 300` to override the default 5 minute inactivity window when needed
-- typed commands like `prompt`, `steer`, `follow-up`, `interrupt`, `abort`, `approve`, `disapprove`, `nudge`, `heuristic`, `input`, `edit`, `confirm`, `reject-confirm`, `cancel`, and `select`
+- typed commands like `prompt`, `steer`, `follow-up`, `interrupt`, `abort`, `approve`, `reject`, `nudge`, `heuristic`, `input`, `edit`, `confirm`, `reject-confirm`, `cancel`, and `select`
 - `babysitter send '<json>'` only as a raw JSON escape hatch
 - `babysitter stop` to end the run
 
@@ -51,7 +51,8 @@ Use typed commands first:
 ```sh
 ./babysitter prompt --file task.md
 ./babysitter approve REQ1
-./babysitter nudge REQ2 --file nudge.txt
+./babysitter reject REQ2
+./babysitter nudge REQ3 --file nudge.txt
 ```
 
 For `Nudge`, prefer the high-level CLI form:
@@ -69,8 +70,8 @@ Your job:
 
 - keep the run bounded
 - approve reasonable actions quickly
-- disapprove obvious drift or harmful actions
-- nudge when the model is close but needs local correction
+- reject actions with the fixed reason when you want a one-click hard no
+- nudge obvious drift, harmful actions, or local corrections with a concrete reason
 - write down new findings in filesystem memory
 
 ## The Two Kinds Of JSON You Send
@@ -143,7 +144,7 @@ Preferred CLI:
 
 ```sh
 ./babysitter approve REQ1
-./babysitter disapprove REQ1
+./babysitter reject REQ1
 ./babysitter nudge REQ1 --text "Do not debug tic80ctl. Continue the bounded workflow: load the cart, then run it."
 ./babysitter heuristic REQ1
 ./babysitter select REQ1 --option "Approve"
@@ -154,7 +155,7 @@ Preferred CLI:
 ```
 
 ```json
-{"type":"extension_ui_response","id":"REQ1","value":"Disapprove"}
+{"type":"extension_ui_response","id":"REQ1","value":"Reject"}
 ```
 
 ```json
@@ -288,8 +289,8 @@ flowchart TD
 Use this default policy:
 
 - approve bounded actions that directly move the task forward
-- disapprove clear drift, destructive moves, or actions that violate hard constraints
-- nudge when the model is near the correct path but needs sharper local guidance
+- use `Reject` when you want the fixed host reason `User rejected action`
+- nudge clear drift, destructive moves, hard-constraint violations, or near-correct work with sharper local guidance
 - when the extension offers `Heuristic Suggestion (...)`, choose it only if it matches your actual judgment
 - otherwise choose the option that matches your actual judgment
 
@@ -317,8 +318,8 @@ For TIC-80 coding runs, default to:
 
 - keep the model on a bounded `start -> load -> run -> eval/playtest` path
 - after a Lua write, push toward runtime verification instead of accepting file creation as success
-- if a Lua write still contains a known wrong TIC-80 structure, API family, or variable-scope mistake, disapprove it or give one exact nudge instead of approving it "to see what happens"
-- reserve nudges for local fixes; if the cart is structurally wrong again after one correction, stop approving and prefer bounded disapprove/stop behavior
+- if a Lua write still contains a known wrong TIC-80 structure, API family, or variable-scope mistake, give one exact nudge instead of approving it "to see what happens"
+- reserve nudges for local fixes; if the cart is structurally wrong again after one correction, stop approving and prefer bounded stop or restart behavior
 - once `tic80ctl` is known to exist, do not spend extra turns rediscovering it
 - prefer a direct session sequence in the run directory: `tic80ctl start`, then `tic80ctl load ...`, then `tic80ctl run`
 - do not casually background `tic80ctl start` with `&` unless there is a clear reason and no simpler foreground path

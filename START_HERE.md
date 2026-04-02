@@ -13,7 +13,7 @@ If you are operating a babysitting session, use `babysitter` as the primary work
 - `babysitter poll --raw` to inspect raw output
 - `babysitter poll --jsonl` only for compatibility
 - `babysitter prompt`, `babysitter steer`, `babysitter follow-up`, `babysitter interrupt`, and `babysitter abort` for typed agent-control commands
-- `babysitter approve`, `babysitter disapprove`, `babysitter heuristic`, `babysitter input`, `babysitter edit`, `babysitter confirm`, `babysitter reject-confirm`, `babysitter cancel`, and `babysitter select` for typed request responses
+- `babysitter approve`, `babysitter reject`, `babysitter nudge`, `babysitter heuristic`, `babysitter input`, `babysitter edit`, `babysitter confirm`, `babysitter reject-confirm`, `babysitter cancel`, and `babysitter select` for typed request responses
 - `babysitter send '<json>'` only as the raw JSON escape hatch
 - `babysitter stop` to end the run
 

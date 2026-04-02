@@ -1214,34 +1214,21 @@ def cmd_approve(args: argparse.Namespace) -> int:
     )
 
 
-def cmd_disapprove(args: argparse.Namespace) -> int:
+def cmd_reject(args: argparse.Namespace) -> int:
     session = load_session_or_fail()
     request = require_pending_request(session, args.request_id, expected_method="select")
-    require_select_option(request, "Disapprove")
+    require_select_option(request, "Reject")
     return send_request_response(
         args,
         args.request_id,
         expected_method="select",
-        value="Disapprove",
-        command_name="disapprove",
-        message=f"disapproved {args.request_id}",
+        value="Reject",
+        command_name="reject",
+        message=f"rejected {args.request_id}",
     )
 
 
 def cmd_nudge(args: argparse.Namespace) -> int:
-    session = load_session_or_fail()
-    request = require_pending_request(session, args.request_id, expected_method="select")
-    require_select_option(request, "Nudge")
-    if not has_text_source(args):
-        return send_request_response(
-            args,
-            args.request_id,
-            expected_method="select",
-            value="Nudge",
-            command_name="nudge",
-            message=f"selected Nudge for {args.request_id}",
-        )
-
     nudge_text = read_text_source(args)
     session = require_live_session()
     request = require_pending_request(session, args.request_id, expected_method="select")
@@ -1560,20 +1547,20 @@ def build_parser() -> argparse.ArgumentParser:
         command_parser.set_defaults(func=handler)
 
     add_select_command("approve", "answer a select request with Approve", cmd_approve)
-    add_select_command("disapprove", "answer a select request with Disapprove", cmd_disapprove)
+    add_select_command("reject", "answer a select request with Reject", cmd_reject)
     add_select_command("heuristic", "choose the heuristic suggestion option on a select request", cmd_heuristic)
 
     nudge_parser = subparsers.add_parser(
         "nudge",
-        help="answer a select request with Nudge, optionally including the nudge text",
+        help="answer a select request with Nudge and required text",
         description=(
-            "Send `Nudge` for a pending select request. If you also pass --text, --file, or --stdin, "
-            "babysitter will wait for the follow-up input request and answer it automatically."
+            "Send `Nudge` for a pending select request. You must also pass --text, --file, or --stdin, "
+            "and babysitter will wait for the follow-up input request and answer it automatically."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     nudge_parser.add_argument("request_id", help="pending select request id")
-    nudge_source_group = nudge_parser.add_mutually_exclusive_group(required=False)
+    nudge_source_group = nudge_parser.add_mutually_exclusive_group(required=True)
     nudge_source_group.add_argument("--text", help="send inline nudge text after selecting Nudge")
     nudge_source_group.add_argument("--file", help="read nudge text from file after selecting Nudge")
     nudge_source_group.add_argument("--stdin", action="store_true", help="read nudge text from standard input")
@@ -1641,7 +1628,7 @@ def build_parser() -> argparse.ArgumentParser:
             "Preferred commands:\n"
             f"  {prog} prompt --file task.md\n"
             f"  {prog} approve REQ123\n"
-            f"  {prog} input REQ124 --file nudge.txt\n\n"
+            f"  {prog} nudge REQ124 --file nudge.txt\n\n"
             "Raw payload example:\n"
             f"  {prog} send '{{\"type\":\"extension_ui_response\",\"id\":\"REQ\",\"value\":\"Approve\"}}'"
         ),
