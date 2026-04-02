@@ -27,7 +27,7 @@ This repo currently relies on runtime verification rather than an automated test
 
 ## Commit & Pull Request Guidelines
 
-Git history currently contains only `first commit`, so there is no mature convention to copy. Use short, imperative commit subjects, optionally scoped, for example `docs: add contributor guide` or `cli: tighten stale session handling`. PRs should describe the operator scenario changed, list verification commands run, and include screenshots or poll excerpts when extension UI behavior changes. Do not commit generated artifacts such as `.local/`, `runs/`, `stdout`, `stderr`, or `playtest/`.
+Every time you are asked to commit, look at recent commits on your branch to get a feel of what commits should be like.
 
 <!-- BEGIN BEADS INTEGRATION -->
 ## Issue Tracking with bd (beads)
@@ -37,7 +37,7 @@ Git history currently contains only `first commit`, so there is no mature conven
 ### Why bd?
 
 - Dependency-aware: Track blockers and relationships between issues
-- Git-friendly: Dolt-powered version control with native sync
+- Git-friendly: issue state lives alongside the repo and follows branch-local work
 - Agent-optimized: JSON output, ready work detection, discovered-from links
 - Prevents duplicate tracking systems and confusion
 
@@ -104,7 +104,7 @@ bd close bd-42 --reason "Completed" --json
 - ❌ Do NOT use external issue trackers
 - ❌ Do NOT duplicate tracking systems
 
-For more details, see README.md and docs/QUICKSTART.md.
+For more details, see README.md and [.beads/README.md](/workspace/babysitter/.beads/README.md).
 
 ## Landing the Plane (Session Completion)
 
