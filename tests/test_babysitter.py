@@ -159,7 +159,7 @@ class BabysitterCliTests(unittest.TestCase):
                     "last_turn_state": "running",
                 },
             }
-            args = argparse.Namespace(json=True, raw=False)
+            args = argparse.Namespace(json=True, raw=False, timeout=0)
             output = io.StringIO()
 
             with (
@@ -194,7 +194,7 @@ class BabysitterCliTests(unittest.TestCase):
                     "last_turn_state": "running",
                 },
             }
-            args = argparse.Namespace(json=True, raw=False)
+            args = argparse.Namespace(json=True, raw=False, timeout=0)
             output = io.StringIO()
 
             with (
@@ -205,11 +205,8 @@ class BabysitterCliTests(unittest.TestCase):
                 result = babysitter.cmd_poll(args)
 
         self.assertEqual(result, 0)
-        payload = json.loads(output.getvalue())
-        self.assertEqual(len(payload), 1)
-        self.assertEqual(payload[0]["type"], "streaming_output")
-        self.assertGreater(payload[0]["pending_bytes"], 0)
-        self.assertIn("partial", payload[0]["preview"])
+        self.assertEqual(output.getvalue(), "no new messages\n")
+        self.assertIn("partial", session["poll_state"]["json"]["pending"])
 
     def test_read_text_source_requires_exactly_one_source(self):
         args = argparse.Namespace(text="hello", file=None, stdin=False)
@@ -222,29 +219,49 @@ class BabysitterCliTests(unittest.TestCase):
         session = {
             "runtime": {
                 "pending_requests": {
-                    "REQ1": {"id": "REQ1", "method": "select", "options": ["Approve", "Disapprove", "Nudge"]}
+                    "REQ1": {"id": "REQ1", "method": "select", "options": ["Approve", "Nudge"]}
                 },
                 "pending_request_order": ["REQ1"],
                 "last_turn_state": "running",
             }
         }
-        captured = {}
+        sent_payloads = []
 
         def capture_send(session_arg, payload, raw_payload=None):
-            captured["payload"] = payload
+            sent_payloads.append(payload)
 
         with (
             mock.patch.object(babysitter, "load_session_or_fail", return_value=session),
             mock.patch.object(babysitter, "require_live_session", return_value=session),
             mock.patch.object(babysitter, "send_payload", side_effect=capture_send),
-            mock.patch.object(babysitter, "emit_command_success", return_value=0),
+            mock.patch.object(
+                babysitter,
+                "wait_for_nudge_follow_up_request",
+                return_value={"id": "REQ2", "method": "input"},
+            ),
         ):
-            result = babysitter.cmd_nudge(argparse.Namespace(request_id="REQ1", json=False))
+            with mock.patch.object(babysitter, "read_text_source", return_value="Use TIC() and a valid trailing palette block."):
+                result = babysitter.cmd_nudge(
+                    argparse.Namespace(
+                        request_id="REQ1",
+                        text="Use TIC() and a valid trailing palette block.",
+                        file=None,
+                        stdin=False,
+                        json=False,
+                    )
+                )
 
         self.assertEqual(result, 0)
         self.assertEqual(
-            captured["payload"],
-            {"type": "extension_ui_response", "id": "REQ1", "value": "Nudge"},
+            sent_payloads,
+            [
+                {"type": "extension_ui_response", "id": "REQ1", "value": "Nudge"},
+                {
+                    "type": "extension_ui_response",
+                    "id": "REQ2",
+                    "value": "Use TIC() and a valid trailing palette block.",
+                },
+            ],
         )
 
     def test_cmd_nudge_with_text_auto_answers_follow_up_input(self):
@@ -273,7 +290,7 @@ class BabysitterCliTests(unittest.TestCase):
                 },
                 "runtime": {
                     "pending_requests": {
-                        "REQ1": {"id": "REQ1", "method": "select", "options": ["Approve", "Disapprove", "Nudge"]}
+                        "REQ1": {"id": "REQ1", "method": "select", "options": ["Approve", "Nudge"]}
                     },
                     "pending_request_order": ["REQ1"],
                     "resolved_request_ids": [],
@@ -316,6 +333,35 @@ class BabysitterCliTests(unittest.TestCase):
         )
         self.assertEqual(session["runtime"]["pending_requests"], {})
         self.assertEqual(session["runtime"]["resolved_request_ids"], ["REQ1", "REQ2"])
+
+    def test_cmd_reject_uses_select_response_shape(self):
+        session = {
+            "runtime": {
+                "pending_requests": {
+                    "REQ1": {"id": "REQ1", "method": "select", "options": ["Approve", "Reject", "Nudge"]}
+                },
+                "pending_request_order": ["REQ1"],
+                "last_turn_state": "running",
+            }
+        }
+        captured = {}
+
+        def capture_send(session_arg, payload, raw_payload=None):
+            captured["payload"] = payload
+
+        with (
+            mock.patch.object(babysitter, "load_session_or_fail", return_value=session),
+            mock.patch.object(babysitter, "require_live_session", return_value=session),
+            mock.patch.object(babysitter, "send_payload", side_effect=capture_send),
+            mock.patch.object(babysitter, "emit_command_success", return_value=0),
+        ):
+            result = babysitter.cmd_reject(argparse.Namespace(request_id="REQ1", json=False))
+
+        self.assertEqual(result, 0)
+        self.assertEqual(
+            captured["payload"],
+            {"type": "extension_ui_response", "id": "REQ1", "value": "Reject"},
+        )
 
     def test_cmd_interrupt_uses_abort_rpc_shape(self):
         session = {"runtime": {"last_turn_state": "running"}}

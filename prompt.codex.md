@@ -15,7 +15,7 @@ Codex-specific instructions:
 - if `babysitter poll` already shows a request id and enough approval context, do not switch modes just to answer it
 - do not poll on a timer or out of impatience; poll only when a concrete event trigger justifies checking state
 - if two consecutive polls return `no new messages`, do not immediately escalate to `--raw`; wait for a concrete reason to inspect wire output
-- use typed verbs first: `prompt`, `steer`, `follow-up`, `interrupt`, `abort`, `approve`, `disapprove`, `nudge`, `heuristic`, `input`, `edit`, `confirm`, `reject-confirm`, `cancel`, and `select`
+- use typed verbs first: `prompt`, `steer`, `follow-up`, `interrupt`, `abort`, `approve`, `reject`, `nudge`, `heuristic`, `input`, `edit`, `confirm`, `reject-confirm`, `cancel`, and `select`
 - for `Nudge`, prefer `nudge <id> --text ...` or `--file ...`; babysitter will handle the follow-up input request internally
 - use raw `babysitter send '<json>'` only when the typed commands do not fit
 - use `prompt` to start a run
@@ -27,7 +27,7 @@ Codex-specific instructions:
 - do not kill a `running` session out of impatience and then discover in the next unread tail that the model had finished a request you could have answered
 - only treat the run as stopped or restartable when you have explicit evidence such as `turn end (...)`, `session ... [stopped]`, or another direct stop signal
 - do not approve a write that you already judge to be structurally wrong just to see the runtime error
-- if the model is looping on an identical or near-identical write, do not keep approving it; nudge or disapprove and push it to the next bounded step
+- if the model is looping on an identical or near-identical write, do not keep approving it; nudge it with one exact correction and push it to the next bounded step
 - when writing session findings, do not overstate success; record wasted turns and babysitter mistakes too
 
 Your task:
@@ -47,8 +47,8 @@ Requirements:
 TIC-80-specific requirements:
 - keep the model on a bounded `start -> load -> run -> eval/playtest` path
 - after a Lua write, push toward runtime verification instead of accepting file creation as success
-- if a Lua write still contains a known wrong TIC-80 structure, API family, or variable-scope mistake, disapprove it or give one exact nudge instead of approving it "to see what happens"
-- use nudges for local fixes only; if the cart is structurally wrong again after a correction, stop approving and push toward a bounded stop/disapprove path
+- if a Lua write still contains a known wrong TIC-80 structure, API family, or variable-scope mistake, nudge it with one exact correction instead of approving it "to see what happens"
+- use nudges for local fixes only; if the cart is structurally wrong again after a correction, stop approving and push toward a bounded stop or restart path
 - if a corrected write is already good enough, do not let the model waste turns rewriting the same file again
 - once `tic80ctl` is known to exist, do not spend extra turns rediscovering it
 - prefer a direct sequence in the run directory: `tic80ctl start`, then `tic80ctl load ...`, then `tic80ctl run`

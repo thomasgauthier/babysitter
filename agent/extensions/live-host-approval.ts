@@ -8,7 +8,7 @@ import {
 	type ReviewEvent,
 } from "./tic80-heuristic-suggestor";
 
-type ReviewDecision = "approve" | "disapprove" | "nudge" | "heuristic_suggestion";
+type ReviewDecision = "approve" | "nudge" | "heuristic_suggestion";
 
 type DecisionRecord = {
 	timestamp: string;
@@ -25,7 +25,6 @@ type DecisionRecord = {
 
 type SessionCounters = {
 	approve: number;
-	disapprove: number;
 	nudge: number;
 	heuristic_suggestion: number;
 };
@@ -34,6 +33,7 @@ const LOG_DIRNAME = ".local/host-approvals";
 const STATUS_KEY = "live-host-approval";
 const MAX_LINE_LENGTH = 140;
 const MAX_CONTENT_PREVIEW = 180;
+const USER_REJECTED_ACTION_REASON = "User rejected action";
 const sessionCounters = new Map<string, SessionCounters>();
 
 function truncate(text: string, max = MAX_LINE_LENGTH): string {
@@ -56,7 +56,6 @@ function getCounters(ctx: ExtensionContext): SessionCounters {
 	if (existing) return existing;
 	const created: SessionCounters = {
 		approve: 0,
-		disapprove: 0,
 		nudge: 0,
 		heuristic_suggestion: 0,
 	};
@@ -202,7 +201,7 @@ function setDecisionScoreStatus(ctx: ExtensionContext): void {
 	const counts = getCounters(ctx);
 	ctx.ui.setStatus(
 		`${STATUS_KEY}-score`,
-		`h=${counts.heuristic_suggestion} a=${counts.approve} d=${counts.disapprove} n=${counts.nudge}`,
+		`h=${counts.heuristic_suggestion} a=${counts.approve} n=${counts.nudge}`,
 	);
 }
 
@@ -223,17 +222,13 @@ function sendNudge(pi: ExtensionAPI, review: ReviewEvent, nudge: string): void {
 	);
 }
 
-function sendToolNotExecutedNote(
-	pi: ExtensionAPI,
-	event: ToolCallEvent,
-	outcome: "rejected" | "nudged",
-): void {
+function sendToolNotExecutedNote(pi: ExtensionAPI, event: ToolCallEvent): void {
 	pi.sendMessage(
 		{
 			customType: "host-approval-tool-not-executed",
-			content: `Tool call was ${outcome}; therefore the ${event.toolName} tool was not executed.`,
-			display: `[host] tool not executed: ${event.toolName} (${outcome})`,
-			details: { toolName: event.toolName, outcome },
+			content: `Tool call was blocked by a host nudge; therefore the ${event.toolName} tool was not executed.`,
+			display: `[host] tool not executed: ${event.toolName} (nudged)`,
+			details: { toolName: event.toolName, outcome: "nudged" },
 		},
 		{ deliverAs: "steer" },
 	);
@@ -265,7 +260,7 @@ export default function (pi: ExtensionAPI) {
 
 		const decision = await ctx.ui.select(`${review.title}\n\n${prompt}`, [
 			"Approve",
-			"Disapprove",
+			"Reject",
 			"Nudge",
 			`Heuristic Suggestion (${heuristic.decision})`,
 		]);
@@ -278,21 +273,41 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 
+		if (decision === "Reject") {
+			sendNudge(pi, review, USER_REJECTED_ACTION_REASON);
+			sendToolNotExecutedNote(pi, event);
+			recordDecisionCount(ctx, "nudge");
+			await appendDecisionLog(
+				pi,
+				ctx,
+				event,
+				review,
+				"nudge",
+				"nudge",
+				USER_REJECTED_ACTION_REASON,
+				USER_REJECTED_ACTION_REASON,
+			);
+			setStatus(ctx, `rejected ${review.bucket}`);
+			ctx.ui.notify(`[host] rejected ${review.summary}`, "warning");
+			return {
+				block: true,
+				reason: `Host rejected ${review.bucket}: ${USER_REJECTED_ACTION_REASON}`,
+			};
+		}
+
 		if (decision === "Nudge") {
 			const nudge = await ctx.ui.input("Host Nudge", "Tell the agent what to do instead");
 			const trimmed = nudge?.trim();
 			if (!trimmed) {
-				recordDecisionCount(ctx, "disapprove");
-				await appendDecisionLog(pi, ctx, event, review, "disapprove", "disapprove");
-				setStatus(ctx, `disapproved ${review.bucket}`);
-				sendToolNotExecutedNote(pi, event, "rejected");
+				setStatus(ctx, `nudge text required for ${review.bucket}`);
+				ctx.ui.notify(`[host] nudge requires text for ${review.summary}`, "error");
 				return {
 					block: true,
-					reason: `Host disapproved ${review.bucket} without a nudge.`,
+					reason: `Host selected Nudge for ${review.bucket} without any text.`,
 				};
 			}
 			sendNudge(pi, review, trimmed);
-			sendToolNotExecutedNote(pi, event, "nudged");
+			sendToolNotExecutedNote(pi, event);
 			recordDecisionCount(ctx, "nudge");
 			await appendDecisionLog(pi, ctx, event, review, "nudge", "nudge", trimmed);
 			setStatus(ctx, `nudged ${review.bucket}`);
@@ -312,7 +327,7 @@ export default function (pi: ExtensionAPI) {
 				review,
 				"heuristic_suggestion",
 				heuristic.decision,
-				heuristic.nudge,
+				heuristic.decision === "nudge" ? heuristic.reason : undefined,
 				heuristic.reason,
 			);
 			setStatus(ctx, `heuristic ${heuristic.decision} ${review.bucket}`);
@@ -323,29 +338,12 @@ export default function (pi: ExtensionAPI) {
 			if (heuristic.decision === "approve") {
 				return;
 			}
-			if (heuristic.decision === "nudge" && heuristic.nudge) {
-				sendNudge(pi, review, heuristic.nudge);
-				sendToolNotExecutedNote(pi, event, "nudged");
-				return {
-					block: true,
-					reason: `Heuristic nudge for ${review.bucket}: ${heuristic.nudge}`,
-				};
-			}
-			sendToolNotExecutedNote(pi, event, "rejected");
+			sendNudge(pi, review, heuristic.reason);
+			sendToolNotExecutedNote(pi, event);
 			return {
 				block: true,
-				reason: `Heuristic disapproved ${review.bucket}: ${heuristic.reason}`,
+				reason: `Heuristic nudge for ${review.bucket}: ${heuristic.reason}`,
 			};
 		}
-
-		recordDecisionCount(ctx, "disapprove");
-		await appendDecisionLog(pi, ctx, event, review, "disapprove", "disapprove");
-		setStatus(ctx, `disapproved ${review.bucket}`);
-		ctx.ui.notify(`[host] disapproved ${review.summary}`, "error");
-		sendToolNotExecutedNote(pi, event, "rejected");
-		return {
-			block: true,
-			reason: `Host disapproved ${review.bucket}.`,
-		};
 	});
 }

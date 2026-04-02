@@ -19,7 +19,7 @@ The core method is:
 - run a weaker coding model inside `pi --mode rpc`
 - supervise it from the outside
 - intercept important actions with extensions
-- choose `approve`, `disapprove`, `nudge`, or `heuristic suggestion`
+- choose `approve`, `reject`, `nudge`, or `heuristic suggestion`
 - log those decisions
 - improve the heuristic harness until it matches strong supervision more often
 - then check whether that improves real downstream task success
@@ -159,7 +159,7 @@ Purpose:
 
 - normalize tool calls into a few high-level review buckets
 - pause execution for host review
-- present `approve`, `disapprove`, `nudge`, or `heuristic suggestion`
+- present `approve`, `reject`, `nudge`, or `heuristic suggestion`
 - track decision counts
 - log decisions for later analysis
 
@@ -206,7 +206,7 @@ It classifies tool calls into three buckets:
 It then asks the babysitter for one of:
 
 - `Approve`
-- `Disapprove`
+- `Reject`
 - `Nudge`
 - `Heuristic Suggestion (...)`
 
@@ -214,7 +214,6 @@ It also tracks a score:
 
 - `h` = heuristic suggestion chosen
 - `a` = direct approve
-- `d` = direct disapprove
 - `n` = direct nudge
 
 And it writes decision logs under:
@@ -244,9 +243,7 @@ It looks at:
 And returns:
 
 - `approve`
-- `disapprove`
 - `nudge`
-- optional nudge text
 - a reason string for logging
 
 This file is where model-specific or domain-specific babysitting lore should be promoted once it is ready to become code.

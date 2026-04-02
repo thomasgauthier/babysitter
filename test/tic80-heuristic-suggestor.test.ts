@@ -28,7 +28,7 @@ describe("inferHeuristicSuggestion", () => {
 		resetHeuristicTestState();
 	});
 
-	it("disapproves structurally wrong TIC-80 cart shapes", () => {
+	it("nudges structurally wrong TIC-80 cart shapes", () => {
     const event = makeToolCallEvent({
       path: "game.lua",
       content: `
@@ -45,8 +45,8 @@ end
     const suggestion = inferHeuristicSuggestion(event, makeReview("on_lua_change"));
 
     expect(suggestion).toEqual({
-      decision: "disapprove",
-      reason: "structurally wrong TIC-80 cart shape",
+      decision: "nudge",
+      reason: "This cart is structurally wrong for TIC-80. Use function TIC() as the frame callback and remove the wrong framework/API family before trying again.",
     });
   });
 
@@ -63,12 +63,13 @@ end
 
 	    const suggestion = inferHeuristicSuggestion(event, makeReview("on_lua_change"));
 
-	    expect(suggestion.decision).toBe("nudge");
-	    expect(suggestion.reason).toBe("structural nudge: cart is missing a trailing static palette block");
-	    expect(suggestion.nudge).toContain("valid trailing TIC-80 palette header");
+	    expect(suggestion).toEqual({
+      decision: "nudge",
+      reason: "Keep this as a script cart and include a valid trailing TIC-80 palette header in comments instead of runtime palette mutation.",
+    });
 	  });
 
-  it("disapproves runtime palette mutation", () => {
+  it("nudges runtime palette mutation back to a static palette block", () => {
     const event = makeToolCallEvent({
       path: "game.lua",
       content: `
@@ -85,8 +86,8 @@ end
     const suggestion = inferHeuristicSuggestion(event, makeReview("on_lua_change"));
 
     expect(suggestion).toEqual({
-      decision: "disapprove",
-      reason: "runtime palette mutation risk",
+      decision: "nudge",
+      reason: "Do not mutate the palette at runtime for this cart. Keep a static trailing palette block in comments at the end of the file instead.",
     });
   });
 
@@ -112,9 +113,10 @@ end
 
     const suggestion = inferHeuristicSuggestion(event, makeReview("on_tic_ctl_call"));
 
-    expect(suggestion.decision).toBe("nudge");
-    expect(suggestion.reason).toBe("tic80ctl playtest is missing --script-file");
-    expect(suggestion.nudge).toContain("--script-file");
+    expect(suggestion).toEqual({
+      decision: "nudge",
+      reason: "Use tic80ctl playtest with --script-file <episode.lua> so the harness runs a concrete scripted check.",
+    });
   });
 
   it("approves bounded inspection shell commands", () => {
@@ -139,12 +141,13 @@ end
 
     const suggestion = inferHeuristicSuggestion(event, makeReview("on_anything_else"));
 
-    expect(suggestion.decision).toBe("nudge");
-    expect(suggestion.reason).toBe("likely drift into environment archaeology");
-    expect(suggestion.nudge).toContain("Do not broaden into environment debugging yet");
+    expect(suggestion).toEqual({
+      decision: "nudge",
+      reason: "Do not broaden into environment debugging yet. Stay on the current task and test one direct hypothesis instead.",
+    });
   });
 
-  it("disapproves shell-based lua rewrites that bypass the edit workflow", () => {
+  it("nudges shell-based lua rewrites back to the write/edit tools", () => {
     const event = {
       toolName: "bash",
       input: { command: "cat > game.lua <<'EOF'\nfunction TIC() end\nEOF" },
@@ -153,8 +156,8 @@ end
     const suggestion = inferHeuristicSuggestion(event, makeReview("on_lua_change"));
 
     expect(suggestion).toEqual({
-      decision: "disapprove",
-      reason: "shell-based lua rewrite bypasses the edit workflow",
+      decision: "nudge",
+      reason: "Do not rewrite Lua files via shell redirection. Use the write or edit tool for code changes instead.",
     });
   });
 
@@ -177,9 +180,10 @@ end
 
     const suggestion = inferHeuristicSuggestion(runEvent, makeReview("on_tic_ctl_call"));
 
-    expect(suggestion.decision).toBe("nudge");
-    expect(suggestion.reason).toBe("tic80ctl run should follow a fresh load after the latest lua write");
-    expect(suggestion.nudge).toContain("Reload the cart before running it");
+    expect(suggestion).toEqual({
+      decision: "nudge",
+      reason: "Reload the cart before running it: tic80ctl load <cart>.lua, then tic80ctl run.",
+    });
   });
 
   it("nudges a repeated palette exactness loop back to verification", () => {
@@ -199,12 +203,13 @@ end
       exactnessReview,
     );
 
-    expect(suggestion.decision).toBe("nudge");
-    expect(suggestion.reason).toBe("agent is stuck in a palette exactness loop");
-    expect(suggestion.nudge).toContain("Move to the verification sequence now");
+    expect(suggestion).toEqual({
+      decision: "nudge",
+      reason: "The palette IS correct or close enough to stop counting. I will not approve more counting or grep commands. Move to the verification sequence now: tic80ctl load the cart and then tic80ctl run.",
+    });
   });
 
-  it("disapproves a repeated structural rewrite after a prior structural nudge", () => {
+  it("nudges a repeated structural rewrite after a prior structural nudge", () => {
     const firstWrite = makeToolCallEvent({
       path: "game.lua",
       content: `
@@ -240,12 +245,12 @@ end
     const suggestion = inferHeuristicSuggestion(repeatedBadWrite, makeReview("on_lua_change"));
 
     expect(suggestion).toEqual({
-      decision: "disapprove",
-      reason: "repeated structurally wrong TIC-80 rewrite after prior correction",
+      decision: "nudge",
+      reason: "The rewrite is still structurally wrong after the prior correction. Stop repeating this API family and produce one clean TIC-80 rewrite before continuing.",
     });
   });
 
-  it("disapproves TIC carts that still use the wrong helper family after TIC() appears", () => {
+  it("nudges TIC carts that still use the wrong helper family after TIC() appears", () => {
     const event = makeToolCallEvent({
       path: "game.lua",
       content: `
@@ -264,8 +269,8 @@ end
     const suggestion = inferHeuristicSuggestion(event, makeReview("on_lua_change"));
 
     expect(suggestion).toEqual({
-      decision: "disapprove",
-      reason: "TIC-80 cart uses wrong helper family or coordinates",
+      decision: "nudge",
+      reason: "This cart still uses the wrong TIC-80 helper family or coordinate assumptions. Keep TIC() but replace the invalid helpers with actual TIC-80 APIs.",
     });
   });
 
@@ -307,9 +312,10 @@ end
       makeReview("on_tic_ctl_call"),
     );
 
-    expect(suggestion.decision).toBe("nudge");
-    expect(suggestion.reason).toBe("likely post-verification archaeology after playtest");
-    expect(suggestion.nudge).toContain("Do not restart or screenshot unless there is a new bug to inspect");
+    expect(suggestion).toEqual({
+      decision: "nudge",
+      reason: "A playtest already ran. Do not restart or screenshot unless there is a new bug to inspect.",
+    });
   });
 
   it("falls back to approve when no policy signal is present", () => {

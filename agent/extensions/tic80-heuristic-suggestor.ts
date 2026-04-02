@@ -9,12 +9,11 @@ export type ReviewEvent = {
 	details: string[];
 };
 
-export type AppliedDecision = "approve" | "disapprove" | "nudge";
+export type AppliedDecision = "approve" | "nudge";
 
 export type HeuristicSuggestion = {
 	decision: AppliedDecision;
 	reason: string;
-	nudge?: string;
 };
 
 type SessionState = {
@@ -234,16 +233,16 @@ const rules: HeuristicRule[] = [
 		id: "shell-lua-rewrite",
 		applies: (ctx) => Boolean(ctx.command && isShellLuaRewrite(ctx.normalizedCommand)),
 		suggest: () => ({
-			decision: "disapprove",
-			reason: "shell-based lua rewrite bypasses the edit workflow",
+			decision: "nudge",
+			reason: "Do not rewrite Lua files via shell redirection. Use the write or edit tool for code changes instead.",
 		}),
 	},
 	{
 		id: "wrong-framework",
 		applies: (ctx) => Boolean(ctx.content && hasWrongTic80Framework(ctx.content)),
 		suggest: () => ({
-			decision: "disapprove",
-			reason: "structurally wrong TIC-80 cart shape",
+			decision: "nudge",
+			reason: "This cart is structurally wrong for TIC-80. Use function TIC() as the frame callback and remove the wrong framework/API family before trying again.",
 		}),
 	},
 	{
@@ -255,8 +254,8 @@ const rules: HeuristicRule[] = [
 					hasStructuralTic80Drift(ctx.content),
 			),
 		suggest: () => ({
-			decision: "disapprove",
-			reason: "repeated structurally wrong TIC-80 rewrite after prior correction",
+			decision: "nudge",
+			reason: "The rewrite is still structurally wrong after the prior correction. Stop repeating this API family and produce one clean TIC-80 rewrite before continuing.",
 		}),
 	},
 	{
@@ -268,16 +267,16 @@ const rules: HeuristicRule[] = [
 					hasStructuralTic80Drift(ctx.content),
 			),
 		suggest: () => ({
-			decision: "disapprove",
-			reason: "TIC-80 cart uses wrong helper family or coordinates",
+			decision: "nudge",
+			reason: "This cart still uses the wrong TIC-80 helper family or coordinate assumptions. Keep TIC() but replace the invalid helpers with actual TIC-80 APIs.",
 		}),
 	},
 	{
 		id: "runtime-palette-mutation",
 		applies: (ctx) => Boolean(ctx.content && hasRuntimePaletteMutation(ctx.content)),
 		suggest: () => ({
-			decision: "disapprove",
-			reason: "runtime palette mutation risk",
+			decision: "nudge",
+			reason: "Do not mutate the palette at runtime for this cart. Keep a static trailing palette block in comments at the end of the file instead.",
 		}),
 	},
 	{
@@ -285,8 +284,7 @@ const rules: HeuristicRule[] = [
 		applies: (ctx) => Boolean(ctx.content && !hasTrailingPaletteBlock(ctx.content)),
 		suggest: () => ({
 			decision: "nudge",
-			reason: "structural nudge: cart is missing a trailing static palette block",
-			nudge:
+			reason:
 				"Keep this as a script cart and include a valid trailing TIC-80 palette header in comments instead of runtime palette mutation.",
 		}),
 	},
@@ -295,8 +293,7 @@ const rules: HeuristicRule[] = [
 		applies: (ctx) => Boolean(ctx.command && ctx.repeatedExactnessLoop),
 		suggest: () => ({
 			decision: "nudge",
-			reason: "agent is stuck in a palette exactness loop",
-			nudge:
+			reason:
 				"The palette IS correct or close enough to stop counting. I will not approve more counting or grep commands. Move to the verification sequence now: tic80ctl load the cart and then tic80ctl run.",
 		}),
 	},
@@ -311,8 +308,7 @@ const rules: HeuristicRule[] = [
 			),
 		suggest: () => ({
 			decision: "nudge",
-			reason: "tic80ctl run should follow a fresh load after the latest lua write",
-			nudge: "Reload the cart before running it: tic80ctl load <cart>.lua, then tic80ctl run.",
+			reason: "Reload the cart before running it: tic80ctl load <cart>.lua, then tic80ctl run.",
 		}),
 	},
 	{
@@ -326,8 +322,7 @@ const rules: HeuristicRule[] = [
 			),
 		suggest: () => ({
 			decision: "nudge",
-			reason: "tic80ctl playtest is missing --script-file",
-			nudge: "Use tic80ctl playtest with --script-file <episode.lua> so the harness runs a concrete scripted check.",
+			reason: "Use tic80ctl playtest with --script-file <episode.lua> so the harness runs a concrete scripted check.",
 		}),
 	},
 	{
@@ -341,8 +336,7 @@ const rules: HeuristicRule[] = [
 			),
 		suggest: () => ({
 			decision: "nudge",
-			reason: "likely post-verification archaeology after playtest",
-			nudge: "A playtest already ran. Do not restart or screenshot unless there is a new bug to inspect.",
+			reason: "A playtest already ran. Do not restart or screenshot unless there is a new bug to inspect.",
 		}),
 	},
 	{
@@ -375,8 +369,7 @@ const rules: HeuristicRule[] = [
 			Boolean(ctx.command && includesAny(ctx.normalizedCommand, ARCHAEOLOGY_COMMANDS)),
 		suggest: () => ({
 			decision: "nudge",
-			reason: "likely drift into environment archaeology",
-			nudge:
+			reason:
 				"Do not broaden into environment debugging yet. Stay on the current task and test one direct hypothesis instead.",
 		}),
 	},
