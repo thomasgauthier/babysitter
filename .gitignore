@@ -6,6 +6,8 @@ nohup.out
 stdout
 stderr
 playtest/
+node_modules/
+coverage/
 
 
 # Dolt database files (added by bd init)
