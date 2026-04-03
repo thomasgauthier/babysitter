@@ -26,6 +26,8 @@
 - It may try post-verification archaeology like screenshots after playtest already passed; stop that turn.
 - It may also try to restart `tic80ctl` after a clean playtest unless the operator closes the loop explicitly.
 - Game-logic bugs can persist after the cart loads cleanly, especially around table mutation and unreachable win conditions.
+- Even after reading the authoritative TIC-80 API reference, it can keep one or two structural mistakes alive in the next rewrite, such as wrong `print(...)` argument order, invalid multi-assignment reset syntax, or missing fields like `c.color`.
+- It can misread tool outcomes in reasoning; in `rapid-willow` it claimed an approved `ls` "wasn't executed" immediately after the successful tool output was visible.
 
 ## Operator Implication
 
@@ -43,6 +45,8 @@
 - If the model keeps using `cat >` after disapproval, repeat the tool correction before assuming it has switched.
 - Per-frame counters declared inside `TIC()` can look correct but reset every frame; require persistent state for cumulative counts.
 - Unconditional `end_episode("success")` means the playtest proves runtime stability, not game correctness.
+- Do not assume one reference read will clean up the whole rewrite. Re-check the next draft for the same small but structural TIC-80 mistakes before approving.
+- If reasoning contradicts the visible tool result, trust the tool result and keep the recovery step bounded instead of following the mistaken narration.
 
 ## Confidence
 

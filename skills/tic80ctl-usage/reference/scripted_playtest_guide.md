@@ -49,6 +49,10 @@ Use only:
 - `log(text)`
 - `end_episode(status, message)`
 
+Do not redefine any of these functions inside the episode script.
+
+The harness provides them. Your script should call them, not declare replacement versions.
+
 ### `frameadvance()`
 
 Advances the game by exactly one frame, consumes the prepared input, captures the frame artifact, and increments the frame count.
@@ -86,6 +90,10 @@ frameadvance()
 - `x`
 - `y`
 
+Use these named buttons directly.
+
+Do not guess alternate numeric-button conventions such as `{[4]=true}` when the harness expects named keys like `{a=true}`.
+
 ### Input Semantics
 
 Rules:
@@ -114,6 +122,14 @@ end_episode("failure", "player died")
 
 Use short explicit status strings; the message should state what happened.
 
+Only report `"success"` when the in-game success condition was actually reached.
+
+Do not use unconditional `end_episode("success", ...)` as a substitute for checking whether:
+
+- the player left the menu
+- the route completed
+- the delivery or win condition really happened
+
 ## Good Episode Style
 
 Write scripts that model a real route:
@@ -122,6 +138,8 @@ Write scripts that model a real route:
 - hold deliberate inputs for known spans
 - log each segment with a short label
 - end with an explicit success or failure message
+
+For gameplay verification, include the route step that proves the cart can leave any menu/start state and enter normal play.
 
 Reusable helper:
 
@@ -193,6 +211,12 @@ Use this order:
 
 Do not inspect every screenshot if a few labeled segments can answer the question.
 
+If the cart "runs" but may be visually static:
+
+1. inspect screenshots around the suspected stall
+2. compare them with `log.txt` and `console.txt`
+3. suspect cart-side control flow problems before assuming TIC-80 itself is broken
+
 ## Debugging Pattern
 
 Use cart-side debug instrumentation during episodes.
@@ -234,5 +258,6 @@ If the cart uses randomness, seed or constrain it when possible so repeated runs
 - Use `screenshot` for one-off visual checks.
 - Use `eval` for short runtime probes or toggles.
 - Reuse a passing episode as a regression check after code changes.
+- After a passing episode already proves the route you needed, stop instead of restarting TIC-80 for more archaeology unless a new bug still needs inspection.
 
 The most useful outcome is not “the agent pressed buttons.” The most useful outcome is “the agent can rerun the same route and compare stable evidence between revisions.”

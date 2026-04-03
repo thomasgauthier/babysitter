@@ -14,6 +14,18 @@ For agent-driven iteration, prefer this loop:
 
 This keeps debugging reproducible and avoids control churn.
 
+For bounded babysat tasks, also prefer:
+
+- one small script cart before any multi-file expansion
+- one playable core loop before extra systems, decorative scaffolding, or large asset work
+- structural correctness before palette polish or footer perfection
+
+Do not treat these as meaningful progress:
+
+- adding `function TIC()` while keeping old `load()` / `draw()` / `main()` wrappers
+- producing a large cart that still uses the wrong API family
+- repeated palette rewrites while the gameplay loop is still structurally wrong
+
 ## Start TIC-80 From The Project Root
 
 Treat the repo or game directory as the TIC filesystem root so carts, modules, screenshots, and playtest artifacts all live under the project.
@@ -71,6 +83,14 @@ Practical module notes:
 - requiring many small modules is fine during development
 - final distribution may need a single-file cart instead
 
+For small agent tasks, do not jump to multi-file structure by default.
+
+Use modules only when:
+
+- the single-file cart is already structurally correct
+- the added file split clearly reduces complexity
+- the path behavior is already understood
+
 ## Shipping Caveat
 
 If the game depends on external Lua files, exported players or packaged builds also need those files unless you bundle them back into one cart. Multi-file structure is a development convenience, not automatically a portable release format.
@@ -109,6 +129,12 @@ This also makes runtime inspection easier through `eval`.
 - use `tic80ctl playtest` for anything that depends on multiple frames, route flow, or an artifact trail
 
 Do not substitute a long chain of manual probes for a short deterministic playtest when the behavior spans time.
+
+Do not substitute:
+
+- repeated character counting for one bounded palette correction
+- repeated screenshots for a scripted progression check
+- environment archaeology for the next direct `load`, `run`, or `playtest` step
 
 ## Useful Editing Habit
 

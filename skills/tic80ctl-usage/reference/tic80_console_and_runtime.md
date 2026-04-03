@@ -44,6 +44,14 @@ Use this file for the shell-facing parts of TIC-80 itself: console commands, run
 - `help commands`, `help api`, `help keys`, `help buttons`:
   quick built-in discovery when the local references are insufficient.
 
+Keep this priority order:
+
+1. use the local skill references first
+2. take the next direct bounded runtime step
+3. only then use built-in help or path inspection if the immediate error still leaves behavior unclear
+
+Do not broaden into `help`, `folder`, `dir`, or wrapper debugging just because one earlier step failed.
+
 ## Reliable Runtime Probe Pattern
 
 `eval` needs a live VM. Use this order:
@@ -58,6 +66,19 @@ If `eval` returns nothing useful, the usual causes are:
 - the cart has not been run yet
 - the cart crashed during startup
 - the expression did not emit anything with `trace(...)`
+
+This pattern proves runtime liveness, not game correctness.
+
+Do not stop at:
+
+- `tic80ctl run` succeeding
+- `trace(type(TIC))` returning something useful
+
+Those signals only say the VM is alive. They do not prove:
+
+- the screen is rendering correctly
+- the game can leave the menu or start state
+- the win or delivery route is reachable
 
 ## `eval` Guidance
 
@@ -101,6 +122,10 @@ Why this pattern works:
 Watch for this edge case:
 
 - objects that store methods or closures may still point at old code after reload and may need to be rebuilt.
+
+For bounded agent work, prefer plain `load` then `run` unless you specifically need reload-preserved state.
+
+`resume reload` is useful, but it is not the default proof path for a newly edited cart.
 
 ## External Script Carts
 
@@ -186,3 +211,12 @@ Most relevant kinds during development:
 - Clear the screen every frame with `cls()` unless persistence is intentional.
 - If path resolution is confusing, confirm the TIC-visible root with `folder`, `dir`, and `cd`.
 - Keep one long-lived session running; repeated start/stop cycles cost time and throw away state.
+
+Additional high-signal checks:
+
+- if the cart file changed, `load` it again before `run`
+- if the cart "runs" but looks static, suspect wrong control flow inside `TIC()` before blaming TIC-80 itself
+- early `return` statements inside menu/state branches can prevent later draw code from running
+- a menu or start screen is not enough; the cart needs one real input-driven transition into gameplay
+- if rendering is in doubt, prefer one screenshot or scripted playtest artifact over more guesswork
+- after a clean playtest or decisive runtime proof, stop instead of restarting the session for extra screenshots unless a specific bug still needs inspection

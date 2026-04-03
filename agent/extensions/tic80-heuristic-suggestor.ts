@@ -68,21 +68,39 @@ export function resetHeuristicTestState(): void {
 const STRUCTURAL_API_PATTERNS = [
 	/\blove\./i,
 	/\bfunction\s+(init|update|draw|input)\s*\(/i,
+	/\bfunction\s+TIC\.(start|init|update|draw|frame)\s*\(/i,
+	/\bfunction\s+KEY\s*\(/i,
+	/\bCOLOR\s*\[/i,
+	/\bKEY_[A-Z0-9_]+\b/,
+	/\bKRESSED\s*\(/i,
 	/\binput\.p1\b/i,
 	/\binput\.(pressed|a|b|left|right|up|down)\b/i,
 	/\btic\.(mode|frame)\b/i,
 	/\bTIC\.(w|h|width|height|font)\b/i,
+	/\bTIC\.(cameraX|cameraY|camera|sfx)\b/i,
 	/\b(TIC_RUN|TIC_STOP)\b/i,
 	/\b(tinit|tupdate|tdraw)\b/i,
 	/\b(kdbp|kdb|kbds)\b/i,
+	/\bkpressed\s*\(/i,
+	/\btables\.clear\s*\(/i,
+	/\bkeyp\s*\(/i,
+	/\bkey\s*\(\s*[A-Z_][A-Z0-9_]*\s*\)/,
+	/\bkey\s*\([^)]*\)\s*==\s*['"](left|right|up|down|a|b|x|y)['"]/i,
+	/\bbtnp?\s*\(\s*['"][a-z_]+['"]\s*\)/i,
+	/\bbtnp?\s*\(\s*[A-Z_][A-Z0-9_]*\s*\)/,
+	/\bbtn\s*\(\s*\d+\s*,/i,
+	/\bbtn\s*\(\s*[8-9]\s*\)/i,
 	/\b(btnp\s*\(\s*(1[6-9]|[2-9]\d)\s*\))\b/i,
 	/\bbtn\s*\(\s*\)\s*==\s*3\b/i,
 	/\bbtn\s*\([^)]*\)\s*==\s*3\b/i,
+	/\b(312|320)\b|\b(192)\b/,
 	/\bprint\s*\(\s*\d+\s*,/i,
-	/\b(tile|tileb|keydown|drawtext|text)\s*\(/i,
+	/\b(circle|pt|spe|tile|tileb|keydown|keypressed|drawtext|text|set|setfont|fontsize|setpos|fill|clear|printb)\s*\(/i,
 	/\bfor\s+\w+\s*=\s*\d+\s+to\s+\d+/i,
 	/\b\/\/\b/,
+	/\bEND\b/,
 	/\brand\s*\(/i,
+	/\brandom\s*\(/i,
 ];
 
 const BOUNDED_INSPECTION_COMMANDS = [/\b(read|sed|cat|ls|find|rg)\b/];
@@ -124,8 +142,48 @@ function hasStructuralTic80Drift(content: string): boolean {
 	return STRUCTURAL_API_PATTERNS.some((pattern) => pattern.test(content));
 }
 
+function hasCompetingFrameworkCallbacks(content: string): boolean {
+	const hasTopLevelInit = /\bfunction\s+init\s*\(/i.test(content);
+	const hasTopLevelUpdate = /\bfunction\s+update\s*\(/i.test(content);
+	const hasTopLevelInput = /\bfunction\s+input\s*\(/i.test(content);
+	const hasTopLevelDraw = /\bfunction\s+draw\s*\(/i.test(content);
+	const hasGlobalTic = /\bfunction\s+TIC\s*\(/i.test(content);
+
+	return (
+		hasTopLevelInit ||
+		hasTopLevelInput ||
+		(!hasGlobalTic && (hasTopLevelUpdate || hasTopLevelDraw)) ||
+		((hasTopLevelInit || hasTopLevelInput) && hasTopLevelDraw) ||
+		/\bfunction\s+TIC\.(start|init|update|draw|frame)\s*\(/i.test(content)
+	);
+}
+
 function hasWrongTic80Framework(content: string): boolean {
-	return hasStructuralTic80Drift(content) && !/\bfunction\s+TIC\s*\(/i.test(content);
+	return (
+		hasStructuralTic80Drift(content) &&
+		(hasCompetingFrameworkCallbacks(content) || !/\bfunction\s+TIC\s*\(/i.test(content))
+	);
+}
+
+function hasMalformedTicCallbackSyntax(content: string): boolean {
+	return (
+		/\bTIC\s*\(\s*\)\s*\{/i.test(content) ||
+		/\bfunction\s+TIC\s*\([^)]*\)\s*\{/i.test(content) ||
+		/(^|\n)\s*TIC\s*\(\s*\)\s*\n/i.test(content)
+	);
+}
+
+function hasMenuStateWithoutPlayTransition(content: string): boolean {
+	const referencesMenuState =
+		/\bstate\.menu\b/.test(content) || /\bgameState\s*==\s*["']START["']/.test(content);
+	if (!referencesMenuState) return false;
+
+	const hasMenuExit =
+		/\bstate\.menu\s*=\s*false\b/.test(content) ||
+		/\bgameState\s*=\s*["']PLAY["']/.test(content) ||
+		/\bgameState\s*=\s*["']RUN["']/.test(content);
+
+	return !hasMenuExit;
 }
 
 function isShellLuaRewrite(command: string): boolean {
@@ -134,6 +192,22 @@ function isShellLuaRewrite(command: string): boolean {
 		/\b(cat|tee)\b[\s\S]*\.lua\b[\s\S]*<<[-'"]?\w+/i.test(command) ||
 		/\bpython3?\b[\s\S]*\.lua\b/i.test(command) ||
 		/\bnode\b[\s\S]*\.lua\b/i.test(command)
+	);
+}
+
+function isReferenceDirectoryScan(command: string): boolean {
+	return /\b(ls|find)\b[\s\S]*\breference\/?\b/i.test(command);
+}
+
+function isBroadMarkdownRepoScan(command: string): boolean {
+	return /\bfind\b[\s\S]*\/workspace\/babysitter\b[\s\S]*-name\s+["']?\*\.md["']?/i.test(command);
+}
+
+function isWrongTic80ReferencePath(path?: string): boolean {
+	if (!path) return false;
+	return (
+		/\/workspace\/babysitter\/reference\/.*tic80/i.test(path) &&
+		!/\/workspace\/babysitter\/skills\/tic80ctl-usage\/reference\//.test(path)
 	);
 }
 
@@ -238,11 +312,48 @@ const rules: HeuristicRule[] = [
 		}),
 	},
 	{
+		id: "reference-directory-scan",
+		applies: (ctx) => Boolean(ctx.command && isReferenceDirectoryScan(ctx.normalizedCommand)),
+		suggest: () => ({
+			decision: "nudge",
+			reason:
+				"Do not scan the whole reference directory. Read the specific reference file named in the skill that matches the next step instead.",
+		}),
+	},
+	{
+		id: "broad-markdown-repo-scan",
+		applies: (ctx) => Boolean(ctx.command && isBroadMarkdownRepoScan(ctx.normalizedCommand)),
+		suggest: () => ({
+			decision: "nudge",
+			reason:
+				"Do not scan repo markdown files broadly. The TIC-80 references for this skill are under skills/tic80ctl-usage/reference/. Read the specific file you need there instead.",
+		}),
+	},
+	{
+		id: "wrong-tic80-reference-path",
+		applies: (ctx) => Boolean(isWrongTic80ReferencePath(ctx.path)),
+		suggest: () => ({
+			decision: "nudge",
+			reason:
+				"That TIC-80 reference path is wrong for this repo. Read the needed file from skills/tic80ctl-usage/reference/ instead.",
+		}),
+	},
+	{
+		id: "malformed-tic-callback",
+		applies: (ctx) => Boolean(ctx.content && hasMalformedTicCallbackSyntax(ctx.content)),
+		suggest: () => ({
+			decision: "nudge",
+			reason:
+				"This cart is not valid TIC-80 Lua yet. Define the frame callback as exactly function TIC() ... end, not TIC() { ... }. Keep the cart in normal Lua syntax and use real TIC-80 APIs like cls, print, rect, circ, btn, and btnp.",
+		}),
+	},
+	{
 		id: "wrong-framework",
 		applies: (ctx) => Boolean(ctx.content && hasWrongTic80Framework(ctx.content)),
 		suggest: () => ({
 			decision: "nudge",
-			reason: "This cart is structurally wrong for TIC-80. Use function TIC() as the frame callback and remove the wrong framework/API family before trying again.",
+			reason:
+				"This cart is structurally wrong for TIC-80. Do not use init(), update(), draw(), or other framework callbacks here. Use exactly one function TIC() frame callback, and replace the wrong framework/API family with actual TIC-80 APIs like cls, print, rect, circ, btn, btnp, and key before trying again.",
 		}),
 	},
 	{
@@ -255,7 +366,8 @@ const rules: HeuristicRule[] = [
 			),
 		suggest: () => ({
 			decision: "nudge",
-			reason: "The rewrite is still structurally wrong after the prior correction. Stop repeating this API family and produce one clean TIC-80 rewrite before continuing.",
+			reason:
+				"The rewrite is still using invalid TIC-80 APIs after the prior correction. Stop repeating this API family. Use one function TIC() loop with standard TIC-80 APIs like cls, print, rect, circ, btn, btnp, and key before continuing.",
 		}),
 	},
 	{
@@ -268,7 +380,17 @@ const rules: HeuristicRule[] = [
 			),
 		suggest: () => ({
 			decision: "nudge",
-			reason: "This cart still uses the wrong TIC-80 helper family or coordinate assumptions. Keep TIC() but replace the invalid helpers with actual TIC-80 APIs.",
+			reason:
+				"This cart still uses invalid TIC-80 helpers. Keep function TIC(), but do not use TIC.width/TIC.height/TIC.cameraX/TIC.cameraY/TIC.sfx members. Use numeric btn/btnp inputs with the real direction ids: btn(0)=up, btn(1)=down, btn(2)=left, btn(3)=right. Do not use strings, symbolic constants, or keyboard keycodes. Use print(...) for text instead of text()/set(), and keep a valid 96-hex trailing palette block.",
+		}),
+	},
+	{
+		id: "menu-state-without-play-transition",
+		applies: (ctx) => Boolean(ctx.content && hasMenuStateWithoutPlayTransition(ctx.content)),
+		suggest: () => ({
+			decision: "nudge",
+			reason:
+				"This cart has a start/menu state but no real transition into gameplay. Keep the menu simple, but add one actual btn/btnp-driven path that leaves the start screen and enters the playable loop before worrying about footer polish.",
 		}),
 	},
 	{
@@ -281,7 +403,12 @@ const rules: HeuristicRule[] = [
 	},
 	{
 		id: "missing-palette-block",
-		applies: (ctx) => Boolean(ctx.content && !hasTrailingPaletteBlock(ctx.content)),
+		applies: (ctx) =>
+			Boolean(
+				ctx.content &&
+					!hasStructuralTic80Drift(ctx.content) &&
+					!hasTrailingPaletteBlock(ctx.content),
+			),
 		suggest: () => ({
 			decision: "nudge",
 			reason:

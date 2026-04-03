@@ -23,6 +23,103 @@ If you need the full command list or exact flags, run:
 tic80ctl --help
 ```
 
+## Scope And Priorities
+
+This skill teaches TIC-80 shell workflow and runtime verification.
+
+Use it to:
+
+- choose the right bounded `tic80ctl` step
+- confirm cart/runtime behavior with `run`, `eval`, `screenshot`, and `playtest`
+- avoid common TIC-80 workflow mistakes
+
+Do not use this skill as permission to:
+
+- invent a new engine structure
+- broadly scan repo docs when one named reference file is enough
+- debug the environment before checking the next direct runtime step
+- replace normal code-writing tools with shell redirection
+
+For ordinary gameplay carts, default to:
+
+- one script cart
+- one global `function TIC()` frame callback
+- one bounded gameplay loop proved by runtime verification
+
+## Structural Guardrails
+
+Before you spend time on runtime probing, make sure the cart shape is actually TIC-80 Lua.
+
+Good defaults:
+
+- use exactly one global `function TIC()` callback for the frame loop
+- keep persistent gameplay state outside `TIC()`
+- use real TIC-80 APIs like `cls`, `print`, `rect`, `circ`, `spr`, `btn`, and `btnp`
+- for normal movement input, use gamepad-style `btn/btnp`
+- directional ids are: `btn(0)` for up, `btn(1)` for down, `btn(2)` for left, `btn(3)` for right
+
+Do not treat these as acceptable TIC-80 structure:
+
+- `init()`, `update()`, `draw()`, `input()`, or `main()` as the primary game loop
+- `love.*` callbacks or another engine family
+- `function TIC()` plus leftover `load()` / `update()` / `draw()` wrappers around the real logic
+- bare `TIC()` or brace-style callback syntax instead of normal Lua `function TIC() ... end`
+
+Known fake or high-risk API drift to reject quickly:
+
+- `input.pressed`, `input.a`, `input.p1`
+- `tic.mode`, `tic.frame`
+- `TIC_RUN`, `TIC_STOP`
+- `TIC.w`, `TIC.h`, `TIC.font`, `TIC.cameraX`, `TIC.cameraY`, `TIC.sfx`
+- `kdbp`, `kdb`, `kbds`, `kpressed`
+- `printb`, `drawtext`, `text`, `set`
+- `rand(` when it is being used as guessed TIC-80 API rather than deliberate Lua code
+
+Input anti-patterns to reject:
+
+- string or symbolic arguments to `btn(...)` / `btnp(...)`
+- keyboard-style high button ids such as `btnp(16)`
+- comparisons like `btn(...) == 3`
+- comparisons like `key(...) == "left"` or similar string-direction checks
+
+Text and drawing anti-patterns to reject:
+
+- fake helpers where `print(...)` should be used
+- wrong `print(...)` argument order in TIC-80 carts
+
+## Workflow Guardrails
+
+For bounded agent iteration, prefer this sequence:
+
+1. read the one reference file that matches the next step
+2. write or edit the cart
+3. `tic80ctl start`
+4. `tic80ctl load <cart>.lua`
+5. `tic80ctl run`
+6. use `eval`, `screenshot`, or `playtest` based on the next concrete question
+
+Important:
+
+- if the cart file changed, reload it before running it again
+- prefer relative cart paths from the TIC filesystem root
+- do not treat `run` alone as proof that the cart is playable
+- if a cart is still structurally wrong, fix that before spending turns on environment or wrapper debugging
+- if the task is already proven by a clean playtest, stop instead of restarting TIC-80 for extra archaeology
+
+## Palette And Exactness
+
+If a trailing TIC-80 palette block is required:
+
+- keep it at the very end of the script cart
+- use the exact wrapper lines and exactly 96 lowercase hex characters after `000:`
+
+But do not let palette counting dominate the session:
+
+- structural cart correctness matters more than palette polish
+- do not get stuck in repeated `wc`, `grep`, `sed`, `rg`, or `cat` counting loops
+- if exactness is uncertain, make one bounded correction and return to runtime verification
+- if a correct literal palette string is already available, prefer using it over re-counting by hand
+
 ## Start Here
 
 Good first-use sequence:

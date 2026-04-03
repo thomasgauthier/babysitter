@@ -96,6 +96,22 @@ class BabysitterCliTests(unittest.TestCase):
         self.assertEqual(updated["runtime"]["pending_request_order"], [])
         self.assertEqual(updated["runtime"]["last_turn_state"], "stopped")
 
+    def test_ensure_runtime_state_prunes_resolved_pending_requests(self):
+        session = {
+            "runtime": {
+                "pending_requests": {"REQ1": {"id": "REQ1", "method": "select"}},
+                "pending_request_order": ["REQ1"],
+                "resolved_request_ids": ["REQ1"],
+                "last_turn_state": "running",
+            }
+        }
+
+        runtime = babysitter.ensure_runtime_state(session)
+
+        self.assertEqual(runtime["pending_requests"], {})
+        self.assertEqual(runtime["pending_request_order"], [])
+        self.assertEqual(runtime["resolved_request_ids"], ["REQ1"])
+
     def test_apply_semantic_events_does_not_rehydrate_resolved_request(self):
         session = {"runtime": {"resolved_request_ids": ["REQ1"]}}
         events = [{"type": "extension_ui_request", "id": "REQ1", "method": "input", "title": "Host Nudge"}]
@@ -128,6 +144,30 @@ class BabysitterCliTests(unittest.TestCase):
 
         self.assertIn("ui request (input, not pending):", rendered)
         self.assertNotIn('"pending"', rendered)
+
+    def test_format_pretty_event_includes_heuristic_reason_in_select_title(self):
+        rendered = babysitter.format_pretty_event(
+            {
+                "type": "extension_ui_request",
+                "id": "REQ1",
+                "method": "select",
+                "title": (
+                    "Approve Lua Change?\n\n"
+                    "write game.lua\n"
+                    "tool=write\n"
+                    "path=game.lua\n"
+                    "heuristic nudge: Keep function TIC(), fix the palette footer, and stop clearing inside draw loops."
+                ),
+                "options": ["Approve", "Reject", "Nudge", "Heuristic Suggestion (nudge)"],
+            }
+        )
+
+        self.assertIn("tool policy check:", rendered)
+        self.assertIn(
+            "heuristic nudge: Keep function TIC(), fix the palette footer, and stop clearing inside draw loops.",
+            rendered,
+        )
+        self.assertIn("options: Approve | Reject | Nudge | Heuristic Suggestion (nudge)", rendered)
 
     def test_cmd_poll_json_marks_resolved_request_event_not_pending(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -207,6 +247,131 @@ class BabysitterCliTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertEqual(output.getvalue(), "no new messages\n")
         self.assertIn("partial", session["poll_state"]["json"]["pending"])
+
+    def test_cmd_requests_syncs_pending_requests_from_log(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            stdout_log = Path(tmpdir) / "stdout"
+            stdout_log.write_text(
+                json.dumps(
+                    {
+                        "type": "extension_ui_request",
+                        "id": "REQ1",
+                        "method": "input",
+                        "title": "Host Nudge",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            session = {
+                "stdout_log": str(stdout_log),
+                "poll_state": {
+                    "json": {"offset": 0, "pending": "", "carry_reasoning": "", "carry_assistant_text": ""},
+                    "pretty": {"offset": 0, "pending": "", "carry_reasoning": "", "carry_assistant_text": ""},
+                    "raw": {"offset": 0},
+                },
+                "runtime": {
+                    "pending_requests": {},
+                    "pending_request_order": [],
+                    "resolved_request_ids": [],
+                    "last_turn_state": "running",
+                },
+            }
+            output = io.StringIO()
+
+            with (
+                mock.patch.object(babysitter, "load_session_or_fail", return_value=session),
+                contextlib.redirect_stdout(output),
+            ):
+                result = babysitter.cmd_requests(argparse.Namespace(json=False))
+
+        self.assertEqual(result, 0)
+        self.assertIn("request id: REQ1", output.getvalue())
+        self.assertIn("REQ1", session["runtime"]["pending_requests"])
+
+    def test_cmd_request_syncs_pending_request_from_log(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            stdout_log = Path(tmpdir) / "stdout"
+            stdout_log.write_text(
+                json.dumps(
+                    {
+                        "type": "extension_ui_request",
+                        "id": "REQ1",
+                        "method": "input",
+                        "title": "Host Nudge",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            session = {
+                "stdout_log": str(stdout_log),
+                "poll_state": {
+                    "json": {"offset": 0, "pending": "", "carry_reasoning": "", "carry_assistant_text": ""},
+                    "pretty": {"offset": 0, "pending": "", "carry_reasoning": "", "carry_assistant_text": ""},
+                    "raw": {"offset": 0},
+                },
+                "runtime": {
+                    "pending_requests": {},
+                    "pending_request_order": [],
+                    "resolved_request_ids": [],
+                    "last_turn_state": "running",
+                },
+            }
+            output = io.StringIO()
+
+            with (
+                mock.patch.object(babysitter, "load_session_or_fail", return_value=session),
+                contextlib.redirect_stdout(output),
+            ):
+                result = babysitter.cmd_request(argparse.Namespace(request_id="REQ1", json=False))
+
+        self.assertEqual(result, 0)
+        self.assertIn("request id: REQ1", output.getvalue())
+
+    def test_cmd_status_syncs_pending_request_count_from_log(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            stdout_log = Path(tmpdir) / "stdout"
+            stdout_log.write_text(
+                json.dumps(
+                    {
+                        "type": "extension_ui_request",
+                        "id": "REQ1",
+                        "method": "input",
+                        "title": "Host Nudge",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            session = {
+                "active": False,
+                "session_name": "test-session",
+                "model": "test-model",
+                "run_dir": tmpdir,
+                "stdout_log": str(stdout_log),
+                "poll_state": {
+                    "json": {"offset": 0, "pending": "", "carry_reasoning": "", "carry_assistant_text": ""},
+                    "pretty": {"offset": 0, "pending": "", "carry_reasoning": "", "carry_assistant_text": ""},
+                    "raw": {"offset": 0},
+                },
+                "runtime": {
+                    "pending_requests": {},
+                    "pending_request_order": [],
+                    "resolved_request_ids": [],
+                    "last_turn_state": "running",
+                },
+            }
+            output = io.StringIO()
+
+            with (
+                mock.patch.object(babysitter, "load_session_or_fail", return_value=session),
+                contextlib.redirect_stdout(output),
+            ):
+                result = babysitter.cmd_status(argparse.Namespace(json=False))
+
+        self.assertEqual(result, 0)
+        self.assertIn("pending requests: 1", output.getvalue())
 
     def test_read_text_source_requires_exactly_one_source(self):
         args = argparse.Namespace(text="hello", file=None, stdin=False)

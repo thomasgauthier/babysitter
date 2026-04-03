@@ -163,6 +163,11 @@ function buildPrompt(review: ReviewEvent): string {
 	return [review.summary, ...review.details].join("\n");
 }
 
+function buildSelectTitle(review: ReviewEvent, heuristic: ReturnType<typeof inferHeuristicSuggestion>): string {
+	const heuristicLine = `heuristic ${heuristic.decision}: ${heuristic.reason}`;
+	return `${review.title}\n\n${buildPrompt(review)}\n${heuristicLine}`;
+}
+
 async function appendDecisionLog(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
@@ -255,10 +260,9 @@ export default function (pi: ExtensionAPI) {
 
 		const review = classifyReview(event);
 		const heuristic = inferHeuristicSuggestion(event, review);
-		const prompt = buildPrompt(review);
 		setStatus(ctx, `awaiting ${review.bucket}`);
 
-		const decision = await ctx.ui.select(`${review.title}\n\n${prompt}`, [
+		const decision = await ctx.ui.select(buildSelectTitle(review, heuristic), [
 			"Approve",
 			"Reject",
 			"Nudge",

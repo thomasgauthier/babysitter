@@ -182,6 +182,17 @@ def ensure_runtime_state(session: dict) -> dict:
     last_stop_reason = runtime.get("last_stop_reason")
     if last_stop_reason is not None and not isinstance(last_stop_reason, str):
         runtime["last_stop_reason"] = str(last_stop_reason)
+
+    resolved_request_ids = set(runtime["resolved_request_ids"])
+    if resolved_request_ids:
+        runtime["pending_requests"] = {
+            request_id: payload
+            for request_id, payload in runtime["pending_requests"].items()
+            if request_id not in resolved_request_ids
+        }
+        runtime["pending_request_order"] = [
+            request_id for request_id in runtime["pending_request_order"] if request_id not in resolved_request_ids
+        ]
     return runtime
 
 
@@ -934,6 +945,11 @@ def refresh_runtime_from_log(session: dict, mode: str = HIDDEN_SYNC_POLL_MODE) -
     return events
 
 
+def sync_session_runtime(session: dict) -> dict:
+    refresh_runtime_from_log(session)
+    return session
+
+
 def looks_like_nudge_follow_up_request(request: dict) -> bool:
     if request.get("method") != "input":
         return False
@@ -1066,7 +1082,7 @@ def format_pending_requests_pretty(requests: list[dict]) -> str:
 
 
 def cmd_status(args: argparse.Namespace) -> int:
-    session = load_session_or_fail()
+    session = sync_session_runtime(load_session_or_fail())
     payload = status_payload(session)
     if args.json:
         return emit_json_data(payload)
@@ -1086,7 +1102,7 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 
 def cmd_requests(args: argparse.Namespace) -> int:
-    session = load_session_or_fail()
+    session = sync_session_runtime(load_session_or_fail())
     requests = ordered_pending_requests(session)
     if args.json:
         return emit_json_data(requests)
@@ -1144,7 +1160,7 @@ def cmd_poll(args: argparse.Namespace) -> int:
 
 
 def cmd_request(args: argparse.Namespace) -> int:
-    session = load_session_or_fail()
+    session = sync_session_runtime(load_session_or_fail())
     request = require_pending_request(session, args.request_id)
     if args.json:
         return emit_json_data(request)
