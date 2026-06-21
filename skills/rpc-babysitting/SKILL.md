@@ -144,7 +144,7 @@ Preferred CLI:
 ```sh
 ./babysitter approve REQ1
 ./babysitter disapprove REQ1
-./babysitter nudge REQ1 --text "Do not debug tic80ctl. Continue the bounded workflow: load the cart, then run it."
+./babysitter nudge REQ1 --text "Do not broaden into environment debugging. Stay on the current task."
 ./babysitter heuristic REQ1
 ./babysitter select REQ1 --option "Approve"
 ```
@@ -176,13 +176,13 @@ Reply with top-level `value`.
 Preferred CLI:
 
 ```sh
-./babysitter input REQ2 --text "Do not debug tic80ctl. Continue the bounded workflow: load the cart, then run it."
+./babysitter input REQ2 --text "Do not broaden into environment debugging. Stay on the current task."
 ```
 
 The example text below is only illustrative. The `value` should contain whatever nudge or input actually fits the live situation.
 
 ```json
-{"type":"extension_ui_response","id":"REQ2","value":"Do not debug tic80ctl. Continue the bounded workflow: load the cart, then run it."}
+{"type":"extension_ui_response","id":"REQ2","value":"Do not broaden into environment debugging. Stay on the current task."
 ```
 
 Or cancel:
@@ -311,21 +311,17 @@ Create or update `.md` files for:
 
 Do not leave important observations only in chat history.
 
-## TIC-80 Default Operating Pattern
+## General Operating Pattern
 
-For TIC-80 coding runs, default to:
+When babysitting a coding run:
 
-- keep the model on a bounded `start -> load -> run -> eval/playtest` path
-- after a Lua write, push toward runtime verification instead of accepting file creation as success
-- if a Lua write still contains a known wrong TIC-80 structure, API family, or variable-scope mistake, disapprove it or give one exact nudge instead of approving it "to see what happens"
-- reserve nudges for local fixes; if the cart is structurally wrong again after one correction, stop approving and prefer bounded disapprove/stop behavior
-- once `tic80ctl` is known to exist, do not spend extra turns rediscovering it
-- prefer a direct session sequence in the run directory: `tic80ctl start`, then `tic80ctl load ...`, then `tic80ctl run`
-- do not casually background `tic80ctl start` with `&` unless there is a clear reason and no simpler foreground path
-- if `tic80ctl` reports `no active session`, start one and retry the bounded sequence
+- keep the model on a bounded task path: write, verify, iterate
+- after a file write, push toward runtime verification instead of accepting file creation as success
+- disapprove obvious drift or destructive actions
+- reserve nudges for local fixes; if the same mistake repeats, disapprove and escalate rather than adding more nudges
 - stop environment archaeology unless it is clearly necessary
 - move toward real runtime validation early
-- record poor `tic80ctl` feedback in filesystem memory instead of compensating for it with extra extension logic
+- record learned feedback patterns in filesystem memory instead of compensating with extra extension logic
 
 ## Read Only If Needed
 

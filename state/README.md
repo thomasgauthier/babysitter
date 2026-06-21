@@ -43,9 +43,8 @@ Good notes are:
 
 Examples:
 
-- "Model X overreacts to Selene false positives in TIC-80 carts; prefer runtime validation over lint cleanup."
-- "After ambiguous `tic80ctl` failure, this model broadens into `--help` and `ps`; nudge back to one bounded recovery step."
-- "Heuristic correctly chose `nudge` on Lua write, but wording was too weak to prevent another invalid `TIC()` shape."
+- "After a failed command, the model broadens into `--help` and `ps`; nudge back to one bounded recovery step."
+- "Nudge correctly chosen for a near-miss write, but wording was too weak to prevent another invalid attempt."
 
 ## Starting State
 

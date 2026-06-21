@@ -16,7 +16,7 @@ DEFAULT_MODEL = "omnicoder-9b-iq3_xxs"
 STATE_DIR = Path(".local/babysitter")
 CURRENT_SESSION = STATE_DIR / "current_session.json"
 RUNS_DIR = Path("runs")
-EPHEMERAL_LINT_CONFIGS = {"selene.toml", "tic80.yml"}
+EPHEMERAL_LINT_CONFIGS: set[str] = set()
 POLL_MODES = ("pretty", "raw", "json")
 ACTIONABLE_REQUEST_METHODS = {"select", "input", "editor", "confirm"}
 HIDDEN_SYNC_POLL_MODE = "_sync"
@@ -289,11 +289,7 @@ def build_pi_command(run_dir: Path, model: str, extra_args: list[str]) -> str:
         "--no-extensions",
         "-e",
         str(repo_root() / EXTENSIONS_DIR / "live-host-approval.ts"),
-        "-e",
-        str(repo_root() / EXTENSIONS_DIR / "selene-on-lua-write.ts"),
         "--no-skills",
-        "--skill",
-        str(repo_root() / "skills" / "tic80ctl-usage"),
         "--no-prompt-templates",
         "--model",
         model,
@@ -1277,28 +1273,6 @@ def cmd_nudge(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_heuristic(args: argparse.Namespace) -> int:
-    session = load_session_or_fail()
-    request = require_pending_request(session, args.request_id, expected_method="select")
-    options = request.get("options")
-    if not isinstance(options, list):
-        fail(f"request {args.request_id} does not expose selectable options")
-    heuristic_option = next(
-        (option for option in options if isinstance(option, str) and option.startswith("Heuristic Suggestion")),
-        None,
-    )
-    if not heuristic_option:
-        fail(f"request {args.request_id} does not offer a heuristic suggestion option")
-    return send_request_response(
-        args,
-        args.request_id,
-        expected_method="select",
-        value=heuristic_option,
-        command_name="heuristic",
-        message=f"selected heuristic for {args.request_id}",
-    )
-
-
 def cmd_select(args: argparse.Namespace) -> int:
     session = load_session_or_fail()
     request = require_pending_request(session, args.request_id, expected_method="select")
@@ -1561,8 +1535,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     add_select_command("approve", "answer a select request with Approve", cmd_approve)
     add_select_command("disapprove", "answer a select request with Disapprove", cmd_disapprove)
-    add_select_command("heuristic", "choose the heuristic suggestion option on a select request", cmd_heuristic)
-
     nudge_parser = subparsers.add_parser(
         "nudge",
         help="answer a select request with Nudge, optionally including the nudge text",

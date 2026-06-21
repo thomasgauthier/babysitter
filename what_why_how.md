@@ -19,9 +19,9 @@ The core method is:
 - run a weaker coding model inside `pi --mode rpc`
 - supervise it from the outside
 - intercept important actions with extensions
-- choose `approve`, `disapprove`, `nudge`, or `heuristic suggestion`
+- choose `approve`, `disapprove`, or `nudge`
 - log those decisions
-- improve the heuristic harness until it matches strong supervision more often
+- improve the policy until it matches strong supervision more often
 - then check whether that improves real downstream task success
 
 The working thesis is:
@@ -44,28 +44,10 @@ That is the opportunity:
 
 - move reliability into the runtime
 - keep a stronger babysitter in the loop while building the policy
-- distill that supervision into reusable heuristics and guardrails
+- distill that supervision into reusable guardrails
 
 This is not just prompt engineering.
 It is closer to policy extraction from expert supervision.
-
-## Why TIC-80 Is the Current Testbed
-
-We have been using TIC-80 game creation as the proving ground because it is:
-
-- real enough to expose model failures
-- small enough to iterate quickly
-- strict enough to punish sloppiness
-- easy to validate with `tic80ctl`
-
-It forces exactness around things like:
-
-- `function TIC()`
-- valid Lua
-- static palette footer formatting
-- correct `tic80ctl` sequence
-
-That makes it a good environment for harness work.
 
 ## The Current Runtime Substrate
 
@@ -157,62 +139,23 @@ Source:
 
 Purpose:
 
-- normalize tool calls into a few high-level review buckets
-- pause execution for host review
-- present `approve`, `disapprove`, `nudge`, or `heuristic suggestion`
+- pause execution for host review before every tool call
+- present `approve`, `disapprove`, or `nudge`
 - track decision counts
 - log decisions for later analysis
 
 This is the supervision glue.
 
-### `tic80-heuristic-suggestor.ts`
-
-Source:
-
-- [tic80-heuristic-suggestor.ts](/workspace/babysitter/agent/extensions/tic80-heuristic-suggestor.ts)
-
-Purpose:
-
-- compute the current heuristic suggestion for a reviewed action
-- serve as the hill-climbed cheap stand-in for frontier babysitting
-- be the file that gets iterated on as behavioral lore is promoted into code
-
-This is the evolving heuristic policy layer.
-
-### `selene-on-lua-write.ts`
-
-Source:
-
-- [selene-on-lua-write.ts](/workspace/babysitter/agent/extensions/selene-on-lua-write.ts)
-
-Purpose:
-
-- run Selene-style lint feedback on Lua writes
-- surface quick static problems early
-
-Important caveat:
-
-- this layer can be noisy unless Selene is configured for the target environment
-- in TIC-80 work, false positives on built-ins are a real concern
-
 ## How `live-host-approval.ts` Works
 
-It classifies tool calls into three buckets:
-
-- `on_lua_change`
-- `on_tic_ctl_call`
-- `on_anything_else`
-
-It then asks the babysitter for one of:
+It intercepts every tool call and asks the babysitter for one of:
 
 - `Approve`
 - `Disapprove`
 - `Nudge`
-- `Heuristic Suggestion (...)`
 
 It also tracks a score:
 
-- `h` = heuristic suggestion chosen
 - `a` = direct approve
 - `d` = direct disapprove
 - `n` = direct nudge
@@ -221,36 +164,6 @@ And it writes decision logs under:
 
 - `.local/host-approvals/decisions.jsonl` in the active workspace
 
-It does not own the heuristic policy anymore.
-
-The heuristic suggestion is computed in:
-
-- [tic80-heuristic-suggestor.ts](/workspace/babysitter/agent/extensions/tic80-heuristic-suggestor.ts)
-
-## How `tic80-heuristic-suggestor.ts` Works
-
-This file computes the current `Heuristic Suggestion (...)` choice shown by the host approval UI.
-
-It is intentionally the thing that gets hill-climbed.
-
-Right now it is still simple and hand-written.
-
-It looks at:
-
-- TIC-80 command shapes
-- Lua write content
-- broad inspection-vs-archaeology patterns
-
-And returns:
-
-- `approve`
-- `disapprove`
-- `nudge`
-- optional nudge text
-- a reason string for logging
-
-This file is where model-specific or domain-specific babysitting lore should be promoted once it is ready to become code.
-
 ## The Current Harness Generation Process
 
 The current process is:
@@ -258,7 +171,7 @@ The current process is:
 1. run a weaker model live
 2. babysit it with stronger judgment
 3. capture decisions at meaningful breakpoints
-4. improve heuristics until they agree more often with the babysitter
+4. improve policy until it agrees more often with the babysitter
 5. separate decision agreement from nudge quality
 6. periodically ground the whole loop in real task success
 
@@ -276,16 +189,11 @@ That is exactly the kind of branch the harness should suppress.
 
 ### 2. Tiny exactness failures are persistent
 
-Models can understand the task globally and still repeatedly fail on:
-
-- exact callback naming
-- palette formatting
-- function arity
-- tiny local syntax details
+Models can understand the task globally and still repeatedly fail on local details.
 
 ### 3. Nudge quality matters as much as decision quality
 
-A heuristic can correctly choose `nudge` and still fail because the nudge text is weak.
+A policy can correctly choose `nudge` and still fail because the nudge text is weak.
 
 So we need to improve both:
 
@@ -302,14 +210,10 @@ They often mean the remaining gap is exactness and control policy, not total ina
 - The extension stack is real and runnable.
 - The babysitting loop exists.
 - We can log decisions.
-- We have task-specific guardrails.
-- We have a concrete benchmark domain.
 
 ## What Is Still Weak
 
-- The heuristic layer still over-approves easy cases.
 - Nudge wording is inconsistent.
-- Selene feedback can be noisy in TIC-80 contexts.
 - The system still depends heavily on a strong babysitter.
 - We do not yet have a scaled replay/eval story inside this clean repo.
 
@@ -321,8 +225,6 @@ Think of the project like this:
 - the babysitter is an external controller over JSONL
 - extensions are the control plane
 - `live-host-approval.ts` is the supervision and data loop
-- `tic80-heuristic-suggestor.ts` is the hill-climbed cheap babysitter
-- `selene-on-lua-write.ts` is an optional static-analysis helper
 - the long-term goal is to turn strong live babysitting into reusable runtime policy
 
 ## Read This First
@@ -333,8 +235,6 @@ If you want the shortest path into the project, read in this order:
 2. [elevator_pitch.md](/workspace/babysitter/elevator_pitch.md)
 3. [SKILL.md](/workspace/babysitter/skills/rpc-babysitting/SKILL.md)
 4. [live-host-approval.ts](/workspace/babysitter/agent/extensions/live-host-approval.ts)
-5. [tic80-heuristic-suggestor.ts](/workspace/babysitter/agent/extensions/tic80-heuristic-suggestor.ts)
-6. [selene-on-lua-write.ts](/workspace/babysitter/agent/extensions/selene-on-lua-write.ts)
 
 ## Bottom Line
 

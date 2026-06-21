@@ -20,8 +20,3 @@ Rules:
 
 When a relevant skill is available, read it early and use it.
 Read only as much referenced material as needed for the current next step.
-
-For strict runtime tasks such as TIC-80 work:
-- prefer the documented workflow over guessed commands
-- move toward actual runtime validation quickly
-- treat a written file as an intermediate result, not a completed task

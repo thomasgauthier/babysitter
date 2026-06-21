@@ -5,7 +5,6 @@
 - `python3`
 - `jq`
 - `pi`
-- `tic80ctl`
 
 `babysitter` is a stdlib Python script. There is no Python package to install for it.
 
@@ -30,10 +29,9 @@ cd babysitter
 python3 --version
 jq --version
 pi --help
-tic80ctl --help
 ```
 
-All four commands must work from your shell.
+All three commands must work from your shell.
 
 ## First Run
 
@@ -102,8 +100,6 @@ Important tool-output details:
 
 - Extension-added text is included in `tool_execution_update` or `tool_execution_end` when the extension appends text content to the tool result.
 - Filtered tool events only surface text content from the tool payload. Non-text tool content requires `babysitter poll --raw`.
-- Selene lint results from `agent/extensions/selene-on-lua-write.ts` therefore show up in filtered `poll` as tool output, and lint failures are marked as tool errors.
-- The same Selene extension also emits a separate `notify`, so filtered `poll` can show both the tool output and a one-way UI notification for the same lint run.
 - If a `tool_execution_update` text payload is identical to the later final `tool_execution_end` text for the same tool call, the duplicate update is dropped from filtered output.
 
 Use `babysitter poll --raw` when you need the exact unread stdout bytes instead of the filtered semantic view. Raw mode is the only mode that preserves the full underlying wire events and fields that the filtered views flatten away, including `message_start`, `message_end`, extension-specific structured details, any non-text tool payloads, and partial unread line fragments.

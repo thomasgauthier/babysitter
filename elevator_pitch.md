@@ -38,7 +38,6 @@ A live supervision loop around `pi` that:
    - approve
    - disapprove
    - nudge
-   - heuristic suggestion
 4. logs what the expert babysitter actually chose
 5. improves the heuristics until they increasingly match expert supervision
 
@@ -67,9 +66,7 @@ We already have:
 - a real `pi` RPC supervision loop
 - extension-based interception
 - a host approval / nudge interface
-- task-specific babysitting policy for TIC-80
 - decision logging
-- a scoring loop for heuristic-vs-human choices
 
 We have also seen the key signal we care about:
 
@@ -81,17 +78,12 @@ That is exactly what you want if the goal is to turn expert babysitting into reu
 
 ## The Current Prototype Shape
 
-The current stack has three parts:
+The current stack has:
 
 - `live-host-approval.ts`
   - the supervision loop
   - decision logging
   - host choice application
-- `tic80-heuristic-suggestor.ts`
-  - the hill-climbed heuristic suggestor
-  - the current cheap stand-in for frontier babysitting
-- `selene-on-lua-write.ts`
-  - optional lint feedback on Lua writes
 
 Canonical source location in this repo:
 

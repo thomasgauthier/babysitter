@@ -24,8 +24,6 @@ It supports a host-in-the-loop workflow:
 - improve the heuristic harness until it agrees with the babysitter more often
 - periodically cash that out into real downstream task success
 
-The current proving ground is TIC-80 game creation with `tic80ctl`, but the runtime and supervision model are not TIC-80-specific.
-
 The operator-facing path is `babysitter`.
 
 `babysitter status`, `babysitter requests`, and `babysitter request <id>` are the primary inspection commands. `babysitter poll` is the long-poll inspection command: when the turn is running it waits for new output, and when the turn is idle or stopped it behaves like a one-shot unread drain. `babysitter send` is only for raw JSON payloads when the typed verbs do not fit.
@@ -47,8 +45,6 @@ It now owns:
 The current extension stack is:
 
 - [live-host-approval.ts](/workspace/babysitter/agent/extensions/live-host-approval.ts)
-- [selene-on-lua-write.ts](/workspace/babysitter/agent/extensions/selene-on-lua-write.ts)
-- [tic80-heuristic-suggestor.ts](/workspace/babysitter/agent/extensions/tic80-heuristic-suggestor.ts)
 
 ## Start Here
 
